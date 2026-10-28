@@ -31,8 +31,15 @@ for attempt in range(150):
     time.sleep(1)
 else:
     raise SystemExit("Backend did not become ready")
-with http.open(args.frontend + "/", timeout=10) as response:
-    assert b"FluxChain" in response.read(), "Frontend title was not rebranded"
+for attempt in range(30):
+    try:
+        with http.open(args.frontend + "/", timeout=3) as response:
+            assert b"FluxChain" in response.read(), "Frontend title was not rebranded"
+            break
+    except (OSError, TimeoutError):
+        time.sleep(1)
+else:
+    raise SystemExit("Frontend did not become ready")
 result = api("user/login", {"username": "admin_user", "password": "admin_user"})
 assert result.get("code") == 0, "Fresh administrator login failed"
 token = result["data"]["token"]

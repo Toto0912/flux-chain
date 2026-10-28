@@ -59,7 +59,7 @@ sudo env PANEL_IMAGE_MODE=load bash panel_install.sh install
 # 已有部署则在原目录使用 update，保留 .env
 ```
 
-离线包包含面板、MySQL 镜像和部署资源，不包含测试数据库、运行密钥、Docker/Compose 安装程序。它不会在线拉取镜像。节点程序作为独立 Release 附件提供，可按下面方式离线安装。
+离线包包含面板、MySQL 镜像和部署资源，不包含测试数据库、运行密钥、Docker/Compose 安装程序。它不会在线拉取镜像。包内 artifacts/ 含两种架构的节点程序，也提供独立 Release 附件，可按下面方式离线安装。
 
 ## 节点安装与更新
 

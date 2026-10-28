@@ -45,8 +45,9 @@ def main():
         image = out / f"fluxchain-images-amd64-v{VERSION}.tar.gz"
         if not image.is_file():
             raise SystemExit("Image archive is missing: " + str(image))
-        entries = [(ROOT / p, p) for p in RESOURCES + ["panel_install.sh", "install.sh", "LICENSE", "README.md"]]
+        entries = [(ROOT / p, p) for p in RESOURCES + ["panel_install.sh", "install.sh", "LICENSE", "README.md", "LOCAL_DEPLOYMENT.md", "PLAIN_TRANSPORTS.md", "THIRD_PARTY_NOTICES.md", "CHANGELOG.md"]]
         entries += [(image, "images/panel-images.tar.gz")]
+        entries += [(args.nodes / ("gost-linux-" + arch), "artifacts/gost-linux-" + arch) for arch in ["amd64", "arm64"]]
         archive(out / f"fluxchain-offline-amd64-v{VERSION}.tar.gz", entries)
     assets = sorted(p for p in out.iterdir() if p.is_file() and p.name != "SHA256SUMS")
     with (out / "SHA256SUMS").open("w", encoding="ascii", newline="\n") as manifest:
