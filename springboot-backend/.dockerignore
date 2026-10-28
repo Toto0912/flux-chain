@@ -1,0 +1,6 @@
+target
+logs
+logDir_IS_UNDEFINED
+*.log
+.env*
+.idea

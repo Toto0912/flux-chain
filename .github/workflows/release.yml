@@ -1,0 +1,171 @@
+name: Verify and release FluxChain
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fluxchain-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: springboot-backend/pom.xml
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.23.4'
+          cache-dependency-path: go-gost/go.sum
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '20.19.0'
+      - name: Check versions and deployment scripts
+        run: |
+          python3 scripts/check_release.py
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then python3 scripts/check_release.py "$GITHUB_REF_NAME"; fi
+          for script in panel_install.sh install.sh build_node.sh; do bash -n "$script"; done
+          bash tests/local-install-smoke.sh
+          bash tests/online-install-smoke.sh
+      - name: Backend tests
+        run: mvn -B -f springboot-backend/pom.xml test
+      - name: Frontend production build
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.9 --activate
+          pnpm --dir vite-frontend install --frozen-lockfile
+          pnpm --dir vite-frontend run build
+      - name: Node probe tests and compile
+        working-directory: go-gost
+        run: |
+          go test x/socket/probe_context.go x/socket/probe_context_test.go -count=1
+          CGO_ENABLED=0 go build -mod=readonly -trimpath -o /tmp/fluxchain-node .
+          cd /tmp
+          ./fluxchain-node -V
+
+  images:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        component: [backend, frontend]
+        include:
+          - component: backend
+            context: springboot-backend
+          - component: frontend
+            context: vite-frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ matrix.context }}
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/toto0912/flux-chain-${{ matrix.component }}:${{ github.ref_name }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/Toto0912/flux-chain
+            org.opencontainers.image.version=${{ github.ref_name }}
+            org.opencontainers.image.licenses=Apache-2.0
+      - name: Also tag with application version (without v)
+        env:
+          COMPONENT: ${{ matrix.component }}
+        run: |
+          version=$(cat VERSION)
+          docker buildx imagetools create --tag "ghcr.io/toto0912/flux-chain-$COMPONENT:$version" "ghcr.io/toto0912/flux-chain-$COMPONENT:$GITHUB_REF_NAME"
+
+  nodes:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.23.4'
+          cache-dependency-path: go-gost/go.sum
+      - run: bash build_node.sh amd64 && bash build_node.sh arm64
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nodes
+          path: artifacts/gost-linux-*
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [verify, images, nodes]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nodes
+          path: artifacts
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Package online and offline installers
+        run: |
+          set -euo pipefail
+          version=$(cat VERSION)
+          backend="ghcr.io/toto0912/flux-chain-backend:$version"
+          frontend="ghcr.io/toto0912/flux-chain-frontend:$version"
+          docker pull "$backend"
+          docker pull "$frontend"
+          docker pull --platform linux/amd64 mysql:5.7
+          mkdir -p dist
+          docker save mysql:5.7 "$backend" "$frontend" | gzip -1 > "dist/fluxchain-images-amd64-v$version.tar.gz"
+          python3 scripts/package_release.py --offline
+          (cd dist && sha256sum -c SHA256SUMS)
+      - name: Install exported offline package on a clean runner
+        run: |
+          set -euo pipefail
+          version=$(cat VERSION)
+          mkdir -p /tmp/fluxchain-install-check
+          tar -xzf "dist/fluxchain-offline-amd64-v$version.tar.gz" -C /tmp/fluxchain-install-check
+          cd /tmp/fluxchain-install-check
+          printf '16366\n16365\n' | sudo env PANEL_IMAGE_MODE=load PANEL_IPV6=0 bash panel_install.sh install
+          cd "$GITHUB_WORKSPACE"
+          python3 scripts/verify_install.py
+      - name: Publish complete release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version=$(cat VERSION)
+          python3 scripts/check_release.py "$GITHUB_REF_NAME"
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --verify-tag --draft --title "FluxChain v$version" --notes-file docs/RELEASE_NOTES.md
+          fi
+          gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          if [[ "$version" == *-* ]]; then
+            gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease --latest=false
+          else
+            gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease=false --latest
+          fi
