@@ -24,7 +24,7 @@ dist-ssr
 *.sw?
 
 
-pnpm-lock.yaml
+# Keep pnpm-lock.yaml tracked for reproducible builds.
 yarn.lock
 package-lock.json
 bun.lockb

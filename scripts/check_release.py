@@ -8,6 +8,7 @@ import xml.etree.ElementTree as ET
 root = Path(__file__).resolve().parents[1]
 version = (root / "VERSION").read_text().strip()
 assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?", version), version
+assert (root / "vite-frontend/pnpm-lock.yaml").is_file(), "Missing frontend dependency lockfile"
 package = json.loads((root / "vite-frontend/package.json").read_text())
 assert package["version"] == version
 pom = ET.parse(root / "springboot-backend/pom.xml").getroot()

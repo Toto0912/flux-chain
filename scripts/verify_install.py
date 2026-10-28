@@ -43,9 +43,10 @@ print("PASS clean install frontend, administrator login and default site name")
 for kind in ["SLIDER", "WORD_IMAGE_CLICK", "ROTATE", "CONCAT"]:
     assert api("config/update-single", {"name": "captcha_type", "value": kind})["code"] == 0
     generated = api("captcha/generate", {})
-    assert generated.get("code") in (0, 200), "Captcha generation failed: " + kind
-    data = generated.get("data")
-    assert isinstance(data, dict) and data.get("id"), "Captcha payload missing: " + kind
+    assert generated.get("id"), "Captcha identifier missing: " + kind
+    data = generated.get("captcha")
+    assert isinstance(data, dict) and data.get("type") == kind, "Captcha payload missing: " + kind
+    assert data.get("backgroundImage"), "Captcha background image missing: " + kind
     print("PASS captcha image generation:", kind)
 assert api("config/update-single", {"name": "captcha_type", "value": "RANDOM"})["code"] == 0
 print("All fresh deployment checks passed; authentication settings were preserved")
