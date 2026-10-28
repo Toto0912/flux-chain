@@ -21,11 +21,9 @@ FluxChain 基于 [Flux Panel v1.4.3](https://github.com/bqlpfy/flux-panel) 二�
 
 首版面板支持 **x86_64 Linux**；节点支持 x86_64 和 arm64。服务器预先安装 Docker Engine、Docker Compose v2，以及 curl（或 wget）、tar、sha256sum。
 
-在新目录中下载并运行版本固定的脚本：
+在当前目录中下载并运行版本固定的脚本：
 
 ```bash
-mkdir -p /opt/fluxchain
-cd /opt/fluxchain
 curl -fL --retry 2 https://github.com/Toto0912/flux-chain/releases/download/v1.0.0-beta1/panel_install.sh -o panel_install.sh
 sudo bash panel_install.sh install
 ```
