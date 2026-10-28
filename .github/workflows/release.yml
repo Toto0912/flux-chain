@@ -160,12 +160,13 @@ jobs:
           set -euo pipefail
           version=$(cat VERSION)
           python3 scripts/check_release.py "$GITHUB_REF_NAME"
+          release_notes="FluxChain v$version：管理员多跳转发链、完整路径 TCP 参考延迟选路及 TLS/QUIC/TCP/UDP 节点链路。本次沿用 beta1 版本号更新手机端导航与布局、入口端口自动分配、节点在线/离线安装说明及数据库备份安装逻辑。已有部署需重新下载安装脚本并执行 update；离线部署请重新下载离线包和 SHA256SUMS。安装、升级和使用提醒见 https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/README.md 。"
           if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release create "$GITHUB_REF_NAME" --verify-tag --draft --title "FluxChain v$version" --notes "FluxChain v$version：多跳转发链、完整路径 TCP 参考延迟选路及 TLS/QUIC/TCP/UDP 节点链路。安装、升级和使用提醒见 https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/README.md 。"
+            gh release create "$GITHUB_REF_NAME" --verify-tag --draft --title "FluxChain v$version" --notes "$release_notes"
           fi
           gh release upload "$GITHUB_REF_NAME" dist/* --clobber
           if [[ "$version" == *-* ]]; then
-            gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease --latest=false
+            gh release edit "$GITHUB_REF_NAME" --notes "$release_notes" --draft=false --prerelease --latest=false
           else
-            gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease=false --latest
+            gh release edit "$GITHUB_REF_NAME" --notes "$release_notes" --draft=false --prerelease=false --latest
           fi
