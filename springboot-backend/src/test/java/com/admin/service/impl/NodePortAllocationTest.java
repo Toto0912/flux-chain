@@ -116,6 +116,66 @@ class NodePortAllocationTest {
     }
 
     @Test
+    void chainAutoAllocationSkipsForwardsPausedChainsAndRelayReservations() {
+        when(tunnelMapper.selectList(any())).thenReturn(List.of(tunnel(11, 1, 2), tunnel(12, 2, 1)));
+        when(forwardMapper.selectList(any())).thenReturn(List.of(forward(8, 11, 28100, 28200), forward(9, 12, 28201, 28101)));
+        ForwardChain paused = chain(7, 1, 28102, "{\"1\":28103}");
+        paused.setStatus(0);
+        long future = System.currentTimeMillis() + 60000;
+        when(chainMapper.selectList(any())).thenReturn(List.of(paused, chain(8, 2, 28202,
+                "{\"format\":2,\"endpoints\":[],\"retiredPorts\":{\"1\":[{\"port\":28104,\"expiresAt\":" + future + "}]}}")));
+        ForwardChainDto dto = autoChain();
+        assertNull(ReflectionTestUtils.invokeMethod(chains, "validate", dto, null));
+        assertEquals(28105, dto.getInPort());
+    }
+
+    @Test
+    void chainAutoAllocationReportsExhaustionWithoutSaving() {
+        when(chainMapper.selectList(any())).thenReturn(List.of(chain(7, 1, 28100, "{\"1\":28101}"), chain(8, 1, 28102, "{\"1\":28103}"), chain(9, 1, 28104, "{\"1\":28105}")));
+        assertTrue(chains.createChain(autoChain()).getMsg().contains("已用尽"));
+        verify(chainMapper, never()).insert(any());
+    }
+
+    @Test
+    void blankPortUpdateRetainsExistingEntryPort() {
+        ForwardChain existing = chain(7, 1, 28104, "{\"2\":28200}");
+        when(chainMapper.selectById(7L)).thenReturn(existing);
+        when(chainMapper.selectList(any())).thenReturn(List.of(existing));
+        ForwardChainDto dto = autoChain();
+        assertNull(ReflectionTestUtils.invokeMethod(chains, "validate", dto, 7L));
+        assertEquals(28104, dto.getInPort());
+    }
+
+    @Test
+    void movingEntryAvoidsItsOwnFormerRelayPort() {
+        ForwardChain existing = chain(7, 2, 28200, "{\"1\":28100}");
+        when(chainMapper.selectById(7L)).thenReturn(existing);
+        when(chainMapper.selectList(any())).thenReturn(List.of(existing));
+        ForwardChainDto dto = autoChain();
+        assertNull(ReflectionTestUtils.invokeMethod(chains, "validate", dto, 7L));
+        assertEquals(28101, dto.getInPort());
+    }
+
+    @Test
+    void chainDtoAllowsMissingPortButRejectsInvalidExplicitPorts() {
+        try (javax.validation.ValidatorFactory factory = javax.validation.Validation.buildDefaultValidatorFactory()) {
+            ForwardChainDto dto = autoChain();
+            assertTrue(factory.getValidator().validate(dto).isEmpty());
+            for (int invalid : List.of(0, -1, 65536)) {
+                dto.setInPort(invalid);
+                assertTrue(factory.getValidator().validate(dto).stream().anyMatch(v -> v.getPropertyPath().toString().equals("inPort")));
+            }
+        }
+    }
+
+    private ForwardChainDto autoChain() {
+        ForwardChainDto dto = new ForwardChainDto();
+        dto.setName("自动分配测试"); dto.setInNodeId(1L);
+        dto.setTargetHost("target"); dto.setTargetPort(28777); dto.setHops(List.of(hop(3)));
+        return dto;
+    }
+
+    @Test
     void aSameNodeTunnelUsesDifferentIngressAndExitPorts() {
         Object allocation = ReflectionTestUtils.invokeMethod(forwards, "allocatePorts", tunnel(11, 1, 1), null, null);
         assertNotNull(allocation);

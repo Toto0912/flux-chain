@@ -59,6 +59,9 @@ public class NodeController extends BaseController {
     @PostMapping("/install")
     public R getInstallCommand(@RequestBody Map<String, Object> params) {
         Long id = Long.valueOf(params.get("id").toString());
+        if (Boolean.TRUE.equals(params.get("includeOffline"))) {
+            return nodeService.getInstallCommands(id);
+        }
         return nodeService.getInstallCommand(id);
     }
 

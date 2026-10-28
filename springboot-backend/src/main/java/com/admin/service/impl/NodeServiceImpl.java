@@ -374,6 +374,15 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
      */
     @Override
     public R getInstallCommand(Long id) {
+        return getInstallCommandResult(id, false);
+    }
+
+    @Override
+    public R getInstallCommands(Long id) {
+        return getInstallCommandResult(id, true);
+    }
+
+    private R getInstallCommandResult(Long id, boolean includeOffline) {
         // 1. 验证节点是否存在
         Node node = this.getById(id);
         if (node == null) {
@@ -381,7 +390,7 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
         }
 
         // 2. 构建安装命令
-        return buildInstallCommand(node);
+        return buildInstallCommand(node, includeOffline);
     }
 
     /**
@@ -390,20 +399,28 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
      * @param node 节点对象
      * @return 格式化的安装命令
      */
-    private R buildInstallCommand(Node node) {
+    private R buildInstallCommand(Node node, boolean includeOffline) {
         ViteConfig viteConfig = viteConfigService.getOne(new QueryWrapper<ViteConfig>().eq("name", "ip"));
         if (viteConfig == null) return R.err("请先前往网站配置中设置ip");
 
         StringBuilder command = new StringBuilder();
         
         // 固定发布版本，自动获取 FluxChain 修改版节点；参数始终经过 shell 转义。
-        command.append("curl -fL --retry 2 https://github.com/Toto0912/flux-chain/releases/download/v1.0.0-beta1/install.sh -o fluxchain-node-install.sh && bash ./fluxchain-node-install.sh");
+        command.append("curl -fL --retry 2 https://github.com/Toto0912/flux-chain/releases/download/v1.0.0-beta1/install.sh -o install.sh && bash ./install.sh");
         
         // 处理服务器地址，如果是IPv6需要添加方括号
         String processedServerAddr = processServerAddress(viteConfig.getValue());
         
-        command.append(" -a ").append(shellQuote(processedServerAddr))
-               .append(" -s ").append(shellQuote(node.getSecret()));
+        String arguments = " -a " + shellQuote(processedServerAddr)
+                + " -s " + shellQuote(node.getSecret());
+        command.append(arguments);
+
+        if (includeOffline) {
+            JSONObject commands = new JSONObject();
+            commands.put("online", command.toString());
+            commands.put("offline", "bash ./install.sh -b ./gost-linux-amd64" + arguments);
+            return R.ok(commands);
+        }
         
         return R.ok(command.toString());
     }

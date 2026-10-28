@@ -141,7 +141,7 @@ public class ForwardChainServiceImpl extends ServiceImpl<ForwardChainMapper, For
     }
 
     private String validate(ForwardChainDto dto, Long excludeId) {
-        if (dto.getInNodeId() == null || dto.getInPort() == null || dto.getTargetPort() == null) return "入口节点、监听端口和目标端口必填";
+        if (dto.getInNodeId() == null || dto.getTargetPort() == null) return "入口节点和目标端口必填";
         if (dto.getHops() == null || dto.getHops().isEmpty()) return "至少配置一个跳点";
         if (dto.getProbeIntervalMs() == null) dto.setProbeIntervalMs(DEFAULT_PROBE_INTERVAL_MS);
         if (dto.getProbeTimeoutMs() == null) dto.setProbeTimeoutMs(DEFAULT_PROBE_TIMEOUT_MS);
@@ -152,8 +152,22 @@ public class ForwardChainServiceImpl extends ServiceImpl<ForwardChainMapper, For
         if (!Arrays.asList("tls", "quic", "tcp", "udp").contains(dto.getProtocol())) return "节点链路协议仅支持TLS、QUIC、TCP或UDP";
         Node entry = nodeService.getById(dto.getInNodeId());
         if (!usableNode(entry)) return "入口节点不存在或未连接";
+        Set<Integer> usedEntryPorts = new HashSet<>(portUsageService.collectUsedPorts(null, excludeId).getOrDefault(dto.getInNodeId(), Collections.emptySet()));
+        // An update may move the entry onto a former hop; its listeners are still active until teardown.
+        ForwardChain existing = excludeId == null ? null : getById(excludeId);
+        if (existing != null) usedEntryPorts.addAll(portUsageService.collectChainEndpointPorts(existing).getOrDefault(dto.getInNodeId(), Collections.emptySet()));
+        if (dto.getInPort() == null) {
+            // Preserve an unchanged entry on edit; new entries take the first free port in the node's range.
+            if (existing != null && Objects.equals(existing.getInNodeId(), dto.getInNodeId()) && !usedEntryPorts.contains(existing.getInPort())) {
+                dto.setInPort(existing.getInPort());
+            } else {
+                for (int port = entry.getPortSta(); port <= entry.getPortEnd(); port++) {
+                    if (!usedEntryPorts.contains(port)) { dto.setInPort(port); break; }
+                }
+            }
+            if (dto.getInPort() == null) return "入口节点可用端口已用尽，无法自动分配";
+        }
         if (dto.getInPort() < entry.getPortSta() || dto.getInPort() > entry.getPortEnd()) return "入口监听端口不在节点可用端口范围内";
-        Set<Integer> usedEntryPorts = portUsageService.collectUsedPorts(null, excludeId).getOrDefault(dto.getInNodeId(), Collections.emptySet());
         if (usedEntryPorts.contains(dto.getInPort())) return "该节点上的入口端口已被转发服务或转发链占用，请选择其他端口";
         Set<Long> seenAcrossHops = new HashSet<>();
         for (ForwardChainDto.Hop hop : dto.getHops()) {

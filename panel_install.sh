@@ -61,12 +61,22 @@ fetch_release_file() {
 
 prepare_local_files() {
   local compose_file resource_tmp resource
+  if [[ -e "$SCRIPT_DIR/gost.sql" || -L "$SCRIPT_DIR/gost.sql" ]]; then
+    [[ -f "$SCRIPT_DIR/gost.sql" && -r "$SCRIPT_DIR/gost.sql" && -s "$SCRIPT_DIR/gost.sql" ]] || {
+      echo "已有 gost.sql 为空、不可读或不是普通文件；请检查备份，安装已停止，原文件未覆盖。" >&2
+      return 1
+    }
+  fi
   case "${PANEL_IMAGE_MODE:-pull}" in
     pull)
       resource_tmp=$(mktemp -d)
       fetch_release_file "fluxchain-panel-v$RELEASE_VERSION.tar.gz" "$resource_tmp/panel.tar.gz" || { rm -rf -- "$resource_tmp"; return 1; }
       # 只读取固定资源，忽略归档中的其他路径；不覆盖 .env 或数据卷。
       for resource in docker-compose-v4.yml docker-compose-v6.yml gost.sql springboot-backend/src/main/resources/db/upgrade_forward_chain.sql; do
+        if [[ "$resource" == gost.sql && ( -e "$SCRIPT_DIR/gost.sql" || -L "$SCRIPT_DIR/gost.sql" ) ]]; then
+          echo "保留并使用安装目录已有的 gost.sql。"
+          continue
+        fi
         mkdir -p "$SCRIPT_DIR/$(dirname "$resource")"
         tar -xOzf "$resource_tmp/panel.tar.gz" "$resource" > "$resource_tmp/resource" || { rm -rf -- "$resource_tmp"; return 1; }
         [[ -s "$resource_tmp/resource" ]] || { rm -rf -- "$resource_tmp"; return 1; }
@@ -193,182 +203,28 @@ get_config_params() {
   JWT_SECRET=$(generate_random)
 }
 
-# 安装功能
-install_panel() {
-  echo "🚀 开始安装面板..."
-  check_docker
-  [[ "$(uname -m)" == x86_64 ]] || { echo "首版面板依赖 MySQL 5.7，仅支持 x86_64；节点另支持 arm64。" >&2; return 1; }
-  if [[ -f .env ]] || docker volume inspect mysql_data >/dev/null 2>&1; then
-    echo "检测到已有配置或数据库卷，请保留原 .env 并选择更新，避免覆盖数据库凭据。" >&2
-    return 1
-  fi
-  prepare_local_files
-  get_config_params
-  umask 077
-  cat > .env <<EOF
-DB_NAME=$DB_NAME
-DB_USER=$DB_USER
-DB_PASSWORD=$DB_PASSWORD
-JWT_SECRET=$JWT_SECRET
-FRONTEND_PORT=$FRONTEND_PORT
-BACKEND_PORT=$BACKEND_PORT
-EOF
-
-  prepare_local_images
-  echo "🚀 启动 docker 服务（自动应用日志限制）..."
-  $DOCKER_CMD up -d --no-build --pull never --force-recreate
-
-  echo "🎉 部署完成"
-  echo "🌐 访问地址: http://服务器IP:$FRONTEND_PORT"
-  echo "📚 部署说明: https://github.com/Toto0912/flux-chain#readme"
-  echo "💡 默认管理员账号: admin_user / admin_user"
-  echo "⚠️  登录后请立即修改默认密码！"
-
-
+wait_for_database_initialization() {
+  local attempt state
+  echo "等待 MySQL 完成 gost.sql 初始化..."
+  for ((attempt = 0; attempt < 600; attempt++)); do
+    # MySQL 初始化时临时服务禁用 TCP；TCP 成功意味着整个初始化文件已执行完毕。
+    if docker exec gost-mysql sh -c 'export MYSQL_PWD="$MYSQL_PASSWORD"; exec mysql --protocol=TCP -h127.0.0.1 -u"$MYSQL_USER" "$MYSQL_DATABASE" -Nse "SELECT 1"' >/dev/null 2>&1; then
+      return 0
+    fi
+    state=$(docker inspect -f '{{.State.Status}}' gost-mysql 2>/dev/null || true)
+    case "$state" in
+      exited|dead|restarting)
+        echo "MySQL 初始化失败，请检查 gost.sql 和数据库容器日志；原 SQL 文件已保留。" >&2
+        return 1 ;;
+    esac
+    if ((attempt % 15 == 0)); then echo "正在等待数据库初始化（${attempt}/600 秒）..."; fi
+    sleep 1
+  done
+  echo "数据库初始化超时，安装已停止；请检查数据库日志，保留 .env 与 gost.sql。" >&2
+  return 1
 }
 
-# 更新功能
-update_panel() {
-  echo "🔄 开始更新面板..."
-  check_docker
-
-  [[ -s .env ]] || { echo "更新需要原部署目录的 .env；请勿重新生成数据库凭据。" >&2; return 1; }
-  prepare_local_files
-  # 先完成资源准备，再重建容器；下载或构建失败时现有服务保持运行。
-  prepare_local_images
-  echo "🚀 使用已准备的镜像重建服务并应用日志限制（保留数据卷）..."
-  $DOCKER_CMD up -d --no-build --pull never --force-recreate
-
-  # 等待服务启动
-  echo "⏳ 等待服务启动..."
-
-  # 检查后端容器健康状态
-  echo "🔍 检查后端服务状态..."
-  for i in {1..90}; do
-    if docker ps --format "{{.Names}}" | grep -q "^springboot-backend$"; then
-      BACKEND_HEALTH=$(docker inspect -f '{{.State.Health.Status}}' springboot-backend 2>/dev/null || echo "unknown")
-      if [[ "$BACKEND_HEALTH" == "healthy" ]]; then
-        echo "✅ 后端服务健康检查通过"
-        break
-      elif [[ "$BACKEND_HEALTH" == "starting" ]]; then
-        # 继续等待
-        :
-      elif [[ "$BACKEND_HEALTH" == "unhealthy" ]]; then
-        echo "⚠️ 后端健康状态：$BACKEND_HEALTH"
-      fi
-    else
-      echo "⚠️ 后端容器未找到或未运行"
-      BACKEND_HEALTH="not_running"
-    fi
-    if [ $i -eq 90 ]; then
-      echo "❌ 后端服务启动超时（90秒）"
-      echo "🔍 当前状态：$(docker inspect -f '{{.State.Health.Status}}' springboot-backend 2>/dev/null || echo '容器不存在')"
-      echo "🛑 更新终止"
-      return 1
-    fi
-    # 每15秒显示一次进度
-    if [ $((i % 15)) -eq 1 ]; then
-      echo "⏳ 等待后端服务启动... ($i/90) 状态：${BACKEND_HEALTH:-unknown}"
-    fi
-    sleep 1
-  done
-
-  # 检查数据库容器健康状态
-  echo "🔍 检查数据库服务状态..."
-  for i in {1..60}; do
-    if docker ps --format "{{.Names}}" | grep -q "^gost-mysql$"; then
-      DB_HEALTH=$(docker inspect -f '{{.State.Health.Status}}' gost-mysql 2>/dev/null || echo "unknown")
-      if [[ "$DB_HEALTH" == "healthy" ]]; then
-        echo "✅ 数据库服务健康检查通过"
-        break
-      elif [[ "$DB_HEALTH" == "starting" ]]; then
-        # 继续等待
-        :
-      elif [[ "$DB_HEALTH" == "unhealthy" ]]; then
-        echo "⚠️ 数据库健康状态：$DB_HEALTH"
-      fi
-    else
-      echo "⚠️ 数据库容器未找到或未运行"
-      DB_HEALTH="not_running"
-    fi
-    if [ $i -eq 60 ]; then
-      echo "❌ 数据库服务启动超时（60秒）"
-      echo "🔍 当前状态：$(docker inspect -f '{{.State.Health.Status}}' gost-mysql 2>/dev/null || echo '容器不存在')"
-      echo "🛑 更新终止"
-      return 1
-    fi
-    # 每10秒显示一次进度
-    if [ $((i % 10)) -eq 1 ]; then
-      echo "⏳ 等待数据库服务启动... ($i/60) 状态：${DB_HEALTH:-unknown}"
-    fi
-    sleep 1
-  done
-
-  # 从容器环境变量获取数据库信息
-  echo "🔍 获取数据库配置信息..."
-
-  # 等待一下让服务完全就绪
-  echo "⏳ 等待服务完全就绪..."
-  sleep 5
-
-  # 先检查后端容器是否在运行
-  if ! docker ps --format "{{.Names}}" | grep -q "^springboot-backend$"; then
-    echo "❌ 后端容器未运行，无法获取数据库配置"
-    echo "🔍 当前运行的容器："
-    docker ps --format "table {{.Names}}\t{{.Status}}"
-    echo "🛑 更新终止"
-    return 1
-  fi
-
-  DB_INFO=$(docker exec springboot-backend env | grep "^DB_" 2>/dev/null || echo "")
-
-  if [[ -n "$DB_INFO" ]]; then
-    DB_NAME=$(echo "$DB_INFO" | grep "^DB_NAME=" | cut -d'=' -f2)
-    DB_PASSWORD=$(echo "$DB_INFO" | grep "^DB_PASSWORD=" | cut -d'=' -f2)
-    DB_USER=$(echo "$DB_INFO" | grep "^DB_USER=" | cut -d'=' -f2)
-    DB_HOST=$(echo "$DB_INFO" | grep "^DB_HOST=" | cut -d'=' -f2)
-
-    echo "📋 数据库配置："
-    echo "   数据库名: $DB_NAME"
-    echo "   用户名: $DB_USER"
-    echo "   主机: $DB_HOST"
-  else
-    echo "❌ 无法获取数据库配置信息"
-    echo "🔍 尝试诊断问题："
-    echo "   容器状态: $(docker inspect -f '{{.State.Status}}' springboot-backend 2>/dev/null || echo '容器不存在')"
-    echo "   健康状态: $(docker inspect -f '{{.State.Health.Status}}' springboot-backend 2>/dev/null || echo '无健康检查')"
-
-    # 尝试从 .env 文件读取配置
-    if [[ -f ".env" ]]; then
-      echo "🔄 尝试从 .env 文件读取配置..."
-      DB_NAME=$(grep "^DB_NAME=" .env | cut -d'=' -f2 2>/dev/null)
-      DB_PASSWORD=$(grep "^DB_PASSWORD=" .env | cut -d'=' -f2 2>/dev/null)
-      DB_USER=$(grep "^DB_USER=" .env | cut -d'=' -f2 2>/dev/null)
-
-      if [[ -n "$DB_NAME" && -n "$DB_PASSWORD" && -n "$DB_USER" ]]; then
-        echo "✅ 从 .env 文件成功读取数据库配置"
-        echo "📋 数据库配置："
-        echo "   数据库名: $DB_NAME"
-        echo "   用户名: $DB_USER"
-      else
-        echo "❌ .env 文件中的数据库配置不完整"
-        echo "🛑 更新终止"
-        return 1
-      fi
-    else
-      echo "❌ 未找到 .env 文件"
-      echo "🛑 更新终止"
-      return 1
-    fi
-  fi
-
-  # 检查必要的数据库配置
-  if [[ -z "$DB_PASSWORD" || -z "$DB_USER" || -z "$DB_NAME" ]]; then
-    echo "❌ 数据库配置不完整（缺少必要参数）"
-    echo "🛑 更新终止"
-    return 1
-  fi
-
+migrate_database() {
   # 执行数据库字段变更
   echo "🔄 执行数据库结构更新..."
 
@@ -914,6 +770,190 @@ EOF
 
   # 清理临时文件
   rm -f temp_migration.sql
+
+}
+
+# 安装功能
+install_panel() {
+  echo "🚀 开始安装面板..."
+  check_docker || return 1
+  [[ "$(uname -m)" == x86_64 ]] || { echo "首版面板依赖 MySQL 5.7，仅支持 x86_64；节点另支持 arm64。" >&2; return 1; }
+  if [[ -f .env ]] || docker volume inspect mysql_data >/dev/null 2>&1; then
+    echo "检测到已有配置或数据库卷，请保留原 .env 并选择更新，避免覆盖数据库凭据。" >&2
+    return 1
+  fi
+  prepare_local_files || return 1
+  get_config_params
+  umask 077
+  cat > .env <<EOF
+DB_NAME=$DB_NAME
+DB_USER=$DB_USER
+DB_PASSWORD=$DB_PASSWORD
+JWT_SECRET=$JWT_SECRET
+FRONTEND_PORT=$FRONTEND_PORT
+BACKEND_PORT=$BACKEND_PORT
+EOF
+
+  prepare_local_images || return 1
+  echo "🚀 初始化数据库（优先使用已有 gost.sql）..."
+  $DOCKER_CMD up -d --no-build --pull never mysql || return 1
+  wait_for_database_initialization || return 1
+  migrate_database || return 1
+  echo "🚀 数据库迁移完成，启动面板并应用日志限制..."
+  $DOCKER_CMD up -d --no-build --pull never --force-recreate || return 1
+
+  echo "🎉 部署完成"
+  echo "🌐 访问地址: http://服务器IP:$FRONTEND_PORT"
+  echo "📚 部署说明: https://github.com/Toto0912/flux-chain#readme"
+  echo "💡 若使用备份，请使用原账号和密码；官方初始化数据的默认账号为 admin_user / admin_user。"
+  echo "⚠️  默认密码应在首次登录后修改。"
+
+
+}
+
+# 更新功能
+update_panel() {
+  echo "🔄 开始更新面板..."
+  check_docker
+
+  [[ -s .env ]] || { echo "更新需要原部署目录的 .env；请勿重新生成数据库凭据。" >&2; return 1; }
+  prepare_local_files
+  # 先完成资源准备，再重建容器；下载或构建失败时现有服务保持运行。
+  prepare_local_images
+  echo "🚀 使用已准备的镜像重建服务并应用日志限制（保留数据卷）..."
+  $DOCKER_CMD up -d --no-build --pull never --force-recreate
+
+  # 等待服务启动
+  echo "⏳ 等待服务启动..."
+
+  # 检查后端容器健康状态
+  echo "🔍 检查后端服务状态..."
+  for i in {1..90}; do
+    if docker ps --format "{{.Names}}" | grep -q "^springboot-backend$"; then
+      BACKEND_HEALTH=$(docker inspect -f '{{.State.Health.Status}}' springboot-backend 2>/dev/null || echo "unknown")
+      if [[ "$BACKEND_HEALTH" == "healthy" ]]; then
+        echo "✅ 后端服务健康检查通过"
+        break
+      elif [[ "$BACKEND_HEALTH" == "starting" ]]; then
+        # 继续等待
+        :
+      elif [[ "$BACKEND_HEALTH" == "unhealthy" ]]; then
+        echo "⚠️ 后端健康状态：$BACKEND_HEALTH"
+      fi
+    else
+      echo "⚠️ 后端容器未找到或未运行"
+      BACKEND_HEALTH="not_running"
+    fi
+    if [ $i -eq 90 ]; then
+      echo "❌ 后端服务启动超时（90秒）"
+      echo "🔍 当前状态：$(docker inspect -f '{{.State.Health.Status}}' springboot-backend 2>/dev/null || echo '容器不存在')"
+      echo "🛑 更新终止"
+      return 1
+    fi
+    # 每15秒显示一次进度
+    if [ $((i % 15)) -eq 1 ]; then
+      echo "⏳ 等待后端服务启动... ($i/90) 状态：${BACKEND_HEALTH:-unknown}"
+    fi
+    sleep 1
+  done
+
+  # 检查数据库容器健康状态
+  echo "🔍 检查数据库服务状态..."
+  for i in {1..60}; do
+    if docker ps --format "{{.Names}}" | grep -q "^gost-mysql$"; then
+      DB_HEALTH=$(docker inspect -f '{{.State.Health.Status}}' gost-mysql 2>/dev/null || echo "unknown")
+      if [[ "$DB_HEALTH" == "healthy" ]]; then
+        echo "✅ 数据库服务健康检查通过"
+        break
+      elif [[ "$DB_HEALTH" == "starting" ]]; then
+        # 继续等待
+        :
+      elif [[ "$DB_HEALTH" == "unhealthy" ]]; then
+        echo "⚠️ 数据库健康状态：$DB_HEALTH"
+      fi
+    else
+      echo "⚠️ 数据库容器未找到或未运行"
+      DB_HEALTH="not_running"
+    fi
+    if [ $i -eq 60 ]; then
+      echo "❌ 数据库服务启动超时（60秒）"
+      echo "🔍 当前状态：$(docker inspect -f '{{.State.Health.Status}}' gost-mysql 2>/dev/null || echo '容器不存在')"
+      echo "🛑 更新终止"
+      return 1
+    fi
+    # 每10秒显示一次进度
+    if [ $((i % 10)) -eq 1 ]; then
+      echo "⏳ 等待数据库服务启动... ($i/60) 状态：${DB_HEALTH:-unknown}"
+    fi
+    sleep 1
+  done
+
+  # 从容器环境变量获取数据库信息
+  echo "🔍 获取数据库配置信息..."
+
+  # 等待一下让服务完全就绪
+  echo "⏳ 等待服务完全就绪..."
+  sleep 5
+
+  # 先检查后端容器是否在运行
+  if ! docker ps --format "{{.Names}}" | grep -q "^springboot-backend$"; then
+    echo "❌ 后端容器未运行，无法获取数据库配置"
+    echo "🔍 当前运行的容器："
+    docker ps --format "table {{.Names}}\t{{.Status}}"
+    echo "🛑 更新终止"
+    return 1
+  fi
+
+  DB_INFO=$(docker exec springboot-backend env | grep "^DB_" 2>/dev/null || echo "")
+
+  if [[ -n "$DB_INFO" ]]; then
+    DB_NAME=$(echo "$DB_INFO" | grep "^DB_NAME=" | cut -d'=' -f2)
+    DB_PASSWORD=$(echo "$DB_INFO" | grep "^DB_PASSWORD=" | cut -d'=' -f2)
+    DB_USER=$(echo "$DB_INFO" | grep "^DB_USER=" | cut -d'=' -f2)
+    DB_HOST=$(echo "$DB_INFO" | grep "^DB_HOST=" | cut -d'=' -f2)
+
+    echo "📋 数据库配置："
+    echo "   数据库名: $DB_NAME"
+    echo "   用户名: $DB_USER"
+    echo "   主机: $DB_HOST"
+  else
+    echo "❌ 无法获取数据库配置信息"
+    echo "🔍 尝试诊断问题："
+    echo "   容器状态: $(docker inspect -f '{{.State.Status}}' springboot-backend 2>/dev/null || echo '容器不存在')"
+    echo "   健康状态: $(docker inspect -f '{{.State.Health.Status}}' springboot-backend 2>/dev/null || echo '无健康检查')"
+
+    # 尝试从 .env 文件读取配置
+    if [[ -f ".env" ]]; then
+      echo "🔄 尝试从 .env 文件读取配置..."
+      DB_NAME=$(grep "^DB_NAME=" .env | cut -d'=' -f2 2>/dev/null)
+      DB_PASSWORD=$(grep "^DB_PASSWORD=" .env | cut -d'=' -f2 2>/dev/null)
+      DB_USER=$(grep "^DB_USER=" .env | cut -d'=' -f2 2>/dev/null)
+
+      if [[ -n "$DB_NAME" && -n "$DB_PASSWORD" && -n "$DB_USER" ]]; then
+        echo "✅ 从 .env 文件成功读取数据库配置"
+        echo "📋 数据库配置："
+        echo "   数据库名: $DB_NAME"
+        echo "   用户名: $DB_USER"
+      else
+        echo "❌ .env 文件中的数据库配置不完整"
+        echo "🛑 更新终止"
+        return 1
+      fi
+    else
+      echo "❌ 未找到 .env 文件"
+      echo "🛑 更新终止"
+      return 1
+    fi
+  fi
+
+  # 检查必要的数据库配置
+  if [[ -z "$DB_PASSWORD" || -z "$DB_USER" || -z "$DB_NAME" ]]; then
+    echo "❌ 数据库配置不完整（缺少必要参数）"
+    echo "🛑 更新终止"
+    return 1
+  fi
+
+  migrate_database || return 1
 
   echo "✅ 更新完成"
 }

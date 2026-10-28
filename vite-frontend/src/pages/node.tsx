@@ -11,6 +11,7 @@ import { Alert } from "@heroui/alert";
 import { Progress } from "@heroui/progress";
 import toast from 'react-hot-toast';
 import axios from 'axios';
+import { PRODUCT_URL, PRODUCT_VERSION } from '@/config/product';
 
 
 import { 
@@ -18,7 +19,7 @@ import {
   getNodeList, 
   updateNode, 
   deleteNode,
-  getNodeInstallCommand
+  getNodeInstallCommands
 } from "@/api";
 
 interface Node {
@@ -86,7 +87,9 @@ export default function NodePage() {
   // 安装命令相关状态
   const [installCommandModal, setInstallCommandModal] = useState(false);
   const [installCommand, setInstallCommand] = useState('');
+  const [offlineInstallCommand, setOfflineInstallCommand] = useState('');
   const [currentNodeName, setCurrentNodeName] = useState('');
+  const releaseDownloadUrl = `${PRODUCT_URL}/releases/download/v${PRODUCT_VERSION}`;
   
   const websocketRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -468,26 +471,21 @@ export default function NodePage() {
     }
   };
 
-  // 复制安装命令
-  const handleCopyInstallCommand = async (node: Node) => {
+  // 展示在线和离线两种安装方式。
+  const handleShowInstallCommands = async (node: Node) => {
     setNodeList(prev => prev.map(n => 
       n.id === node.id ? { ...n, copyLoading: true } : n
     ));
     
     try {
-      const res = await getNodeInstallCommand(node.id);
-      if (res.code === 0 && res.data) {
-        try {
-          await navigator.clipboard.writeText(res.data);
-          toast.success('在线安装命令已复制；请在节点服务器上以 root 执行，安装时自动下载并校验对应架构的节点程序', { duration: 8000 });
-        } catch (copyError) {
-          // 复制失败，显示安装命令模态框
-          setInstallCommand(res.data);
-          setCurrentNodeName(node.name);
-          setInstallCommandModal(true);
-        }
+      const res = await getNodeInstallCommands(node.id);
+      if (res.code === 0 && typeof res.data?.online === 'string' && typeof res.data?.offline === 'string') {
+        setInstallCommand(res.data.online);
+        setOfflineInstallCommand(res.data.offline);
+        setCurrentNodeName(node.name);
+        setInstallCommandModal(true);
       } else {
-        toast.error(res.msg || '获取安装命令失败');
+        toast.error(res.code === 0 ? '安装命令不可用，请刷新后重试' : res.msg || '获取安装命令失败');
       }
     } catch (error) {
       toast.error('获取安装命令失败');
@@ -499,11 +497,10 @@ export default function NodePage() {
   };
 
   // 手动复制安装命令
-  const handleManualCopy = async () => {
+  const handleManualCopy = async (command: string, label: string) => {
     try {
-      await navigator.clipboard.writeText(installCommand);
-      toast.success('安装命令已复制到剪贴板');
-      setInstallCommandModal(false);
+      await navigator.clipboard.writeText(command);
+      toast.success(`${label}已复制到剪贴板`);
     } catch (error) {
       toast.error('复制失败，请手动选择文本复制');
     }
@@ -792,7 +789,7 @@ export default function NodePage() {
                         size="sm"
                         variant="flat"
                         color="success"
-                        onPress={() => handleCopyInstallCommand(node)}
+                        onPress={() => handleShowInstallCommands(node)}
                         isLoading={node.copyLoading}
                         className="flex-1 min-h-8"
                       >
@@ -1050,32 +1047,68 @@ export default function NodePage() {
           <ModalContent>
             <ModalHeader>安装命令 - {currentNodeName}</ModalHeader>
             <ModalBody>
-              <div className="space-y-4">
-                <p className="text-sm text-default-600">
-                    请在节点服务器上以 root 执行以下命令。需要 curl 和互联网连接，脚本会下载并校验对应架构的 FluxChain 节点；离线安装见项目部署说明：
-                </p>
-                <div className="relative">
+              <div className="space-y-6">
+                <section className="space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="font-semibold">在线安装</h3>
+                    <Button
+                      size="sm"
+                      color="primary"
+                      variant="flat"
+                      onPress={() => handleManualCopy(installCommand, '在线安装命令')}
+                    >
+                      复制在线命令
+                    </Button>
+                  </div>
+                  <p className="text-sm text-default-600">
+                    请在节点服务器上以 root 执行以下命令。需要 curl 和互联网连接，脚本会下载并校验对应架构的 FluxChain 节点。
+                  </p>
                   <Textarea
+                    aria-label="在线安装命令"
                     value={installCommand}
                     readOnly
                     variant="bordered"
-                    minRows={6}
+                    minRows={4}
                     maxRows={10}
                     className="font-mono text-sm"
                     classNames={{
                       input: "font-mono text-sm"
                     }}
                   />
-                  <Button
-                    size="sm"
-                    color="primary"
-                    variant="flat"
-                    className="absolute top-2 right-2"
-                    onPress={handleManualCopy}
-                  >
-                    复制
-                  </Button>
-                </div>
+                </section>
+                <section className="space-y-3 border-t border-default-200 pt-5">
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="font-semibold">离线安装</h3>
+                    <Button
+                      size="sm"
+                      color="primary"
+                      variant="flat"
+                      onPress={() => handleManualCopy(offlineInstallCommand, '离线安装命令')}
+                    >
+                      复制离线命令
+                    </Button>
+                  </div>
+                  <p className="text-sm text-default-600">
+                    中国大陆服务器访问 GitHub 下载较慢时，可先在其他电脑下载{' '}
+                    <a className="text-primary underline" href={`${releaseDownloadUrl}/install.sh`} target="_blank" rel="noopener noreferrer">install.sh</a>
+                    {' '}和{' '}
+                    <a className="text-primary underline" href={`${releaseDownloadUrl}/gost-linux-amd64`} target="_blank" rel="noopener noreferrer">gost-linux-amd64</a>
+                    ，将两个文件上传至节点服务器的同一目录，再进入该目录，以 root 执行下面的完整命令。使用本地程序时会跳过下载阶段。
+                  </p>
+                  <Textarea
+                    aria-label="离线安装命令"
+                    value={offlineInstallCommand}
+                    readOnly
+                    variant="bordered"
+                    minRows={3}
+                    maxRows={8}
+                    className="font-mono text-sm"
+                    classNames={{ input: "font-mono text-sm" }}
+                  />
+                  <p className="text-xs text-default-500">
+                    上方命令适用于 x86_64 服务器；ARM64 服务器请下载 gost-linux-arm64，并将命令中的文件名对应替换。
+                  </p>
+                </section>
                 <div className="text-xs text-default-500">
                   💡 提示：如果复制按钮失效，请手动选择上方文本进行复制
                 </div>

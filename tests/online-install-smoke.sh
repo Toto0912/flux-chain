@@ -15,7 +15,7 @@ printf 'image fixture\n' > "$TEST_TMP/release/fluxchain-images-amd64-v$VERSION.t
 cp "$ROOT/panel_install.sh" "$ROOT/install.sh" "$TEST_TMP/site/"
 export PANEL_IPV6=0 PANEL_IMAGE_MODE=pull
 source "$TEST_TMP/site/panel_install.sh"
-download_file() { cp "$TEST_TMP/release/${1##*/}" "$2"; }
+download_file() { printf '%s\n' "$1" >> "$TEST_TMP/downloads.calls"; cp "$TEST_TMP/release/${1##*/}" "$2"; }
 docker() {
   printf '%s\n' "$*" >> "$TEST_TMP/docker.calls"
   if [[ "$*" == 'pull mysql backend frontend' && "${MOCK_PULL_FAIL:-0}" == 1 ]]; then return 17; fi
@@ -28,6 +28,22 @@ test -s "$SCRIPT_DIR/springboot-backend/src/main/resources/db/upgrade_forward_ch
 grep -q '^pull mysql backend frontend$' "$TEST_TMP/docker.calls"
 ! grep -q '^build ' "$TEST_TMP/docker.calls"
 echo 'PASS default online install downloads verified resources and pulls prebuilt images'
+cmp "$ROOT/gost.sql" "$SCRIPT_DIR/gost.sql"
+printf '%s\n' '-- existing backup fixture; must remain byte-identical' > "$SCRIPT_DIR/gost.sql"
+cp "$SCRIPT_DIR/gost.sql" "$TEST_TMP/backup.before"
+prepare_local_files
+prepare_local_files
+cmp "$SCRIPT_DIR/gost.sql" "$TEST_TMP/backup.before"
+echo 'PASS existing SQL is preserved on initial preparation and subsequent updates'
+: > "$SCRIPT_DIR/gost.sql"
+cp "$TEST_TMP/downloads.calls" "$TEST_TMP/downloads.before"
+if prepare_local_files; then echo 'FAIL empty backup was accepted'; exit 1; fi
+test ! -s "$SCRIPT_DIR/gost.sql"
+cmp "$TEST_TMP/downloads.calls" "$TEST_TMP/downloads.before"
+cmp "$ROOT/gost.sql" "$TEST_TMP/site/gost.sql" >/dev/null 2>&1 && { echo 'FAIL empty backup was overwritten'; exit 1; }
+cp "$TEST_TMP/backup.before" "$SCRIPT_DIR/gost.sql"
+echo 'PASS an empty existing SQL stops installation without downloading or replacing it'
+
 
 : > "$TEST_TMP/docker.calls"
 MOCK_PULL_FAIL=1 prepare_local_images

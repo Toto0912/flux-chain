@@ -43,6 +43,16 @@ export default function H5Layout({
       )
     },
     {
+      path: '/forward-chain',
+      label: '转发链',
+      icon: (
+        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h8M9 7H7a5 5 0 000 10h2m6-10h2a5 5 0 010 10h-2" />
+        </svg>
+      ),
+      adminOnly: true
+    },
+    {
       path: '/tunnel',
       label: '隧道',
       icon: (
@@ -123,23 +133,24 @@ export default function H5Layout({
       </header>
 
       {/* 主内容区域 */}
-      <main className="flex-1 bg-gray-100 dark:bg-black">
+      <main className="min-w-0 flex-1 bg-gray-100 dark:bg-black">
         {children}
       </main>
 
       {/* 用于给固定 Tabbar 腾出空间的占位元素 */}
-      <div aria-hidden className="h-16 safe-bottom" />
+      <div aria-hidden className="h-[calc(4rem+var(--safe-area-bottom))] flex-shrink-0" />
 
       {/* 底部Tabbar */}
-      <nav className="bg-white dark:bg-black border-t border-gray-200 dark:border-gray-600 h-16 safe-bottom flex-shrink-0 flex items-center justify-around px-2 fixed bottom-0 left-0 right-0 z-30">
+      <nav aria-label="主导航" className="bg-white dark:bg-black border-t border-gray-200 dark:border-gray-600 h-[calc(4rem+var(--safe-area-bottom))] safe-bottom flex-shrink-0 flex items-center justify-around px-1 fixed bottom-0 left-0 right-0 z-30">
         {filteredTabItems.map((item) => {
           const isActive = location.pathname === item.path;
           return (
             <button
               key={item.path}
+              aria-current={isActive ? 'page' : undefined}
               onClick={() => handleTabClick(item.path)}
               className={`
-                flex flex-col items-center justify-center flex-1 h-full
+                flex min-w-0 flex-col items-center justify-center flex-1 h-full
                 transition-colors duration-200 min-h-[44px]
                 ${isActive 
                   ? 'text-primary-600 dark:text-primary-400' 
@@ -150,7 +161,7 @@ export default function H5Layout({
               <div className="flex-shrink-0 mb-1">
                 {item.icon}
               </div>
-              <span className="text-xs font-medium">{item.label}</span>
+              <span className="whitespace-nowrap text-xs font-medium">{item.label}</span>
             </button>
           );
         })}

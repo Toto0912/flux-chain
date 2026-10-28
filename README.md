@@ -2,67 +2,163 @@
 
 **v1.0.0-beta1** · 基于 GOST 的转发管理面板，支持多跳转发链、完整路径探测和自动选路。
 
-FluxChain 基于 [Flux Panel v1.4.3](https://github.com/bqlpfy/flux-panel) 二次开发，保留原项目署名和 Apache License 2.0。项目地址：[Toto0912/flux-chain](https://github.com/Toto0912/flux-chain)。
+基于 [Flux Panel v1.4.3](https://github.com/bqlpfy/flux-panel) 二次开发，保留上游署名和许可证。项目地址：[Toto0912/flux-chain](https://github.com/Toto0912/flux-chain)。
 
-## 功能
+## 界面演示
 
-- 原有端口转发、隧道转发、用户配额、流量统计、倍率与限速管理。
-- 管理员可创建多跳转发链，每跳配置多个候选节点。
-- 枚举完整路径，从入口探测到目标的 TCP 建连延迟，为新连接选择更快的路径；已有连接不迁移。
-- TLS、QUIC、明文 TCP、原生 UDP＋配套明文 TCP 四种节点链路，同时承载 TCP 和 UDP 业务。
-- 探测间隔默认 5 分钟（10 秒～60 分钟），超时默认 3 秒（1～5 秒），切换阈值默认 1000ms（1ms～超时值），探测并发上限 16。
-- 所有路径不可用时保留上次路径，首次部署使用第一条路径；入口计费，中间节点不重复计费。
-- 转发链节点删除保护、跨转发端口占用检查及部署失败回滚。
-- Docker 日志每份 50MB、最多 7 份；后端文件约 100MB 轮转、归档总量 1GB、最长 30 天。
+转发链列表：查看当前路径及所有完整路径的探测结果。
 
-**UDP 模式仍依据配套 TCP 链路到目标的参考延迟选路，不代表真实 UDP 延迟或 UDP 可达性。** 纯 UDP 目标的 TCP 探测会失败，此时按保留路径规则转发。更多说明见 [传输方式](PLAIN_TRANSPORTS.md)。
+![转发链列表与完整路径探测结果](docs/images/forward-chain-overview.png)
 
-## 在线安装面板
+创建转发链：选择入口与各跳候选服务器，设置节点间传输方式和探测参数；入口端口支持留空自动分配。
 
-首版面板支持 **x86_64 Linux**；节点支持 x86_64 和 arm64。服务器预先安装 Docker Engine、Docker Compose v2，以及 curl（或 wget）、tar、sha256sum。
+![创建转发链配置界面](docs/images/forward-chain-create.png)
 
-在当前目录中下载并运行版本固定的脚本：
+## 功能与使用提醒
+
+- 保留端口转发、隧道转发、用户配额、流量统计、倍率及限速管理；转发链暂仅管理员可用。
+- 每跳可配置多个候选节点，枚举完整路径，按入口经过整条链到目标的单次 TCP 建连延迟选路；仅影响新连接，已有连接不迁移。
+- 路径切换需比当前路径快出设定阈值。全部探测失败时保留上次路径，首次创建使用第一条路径。
+- 转发链仅统计入口流量，沿用现有配额和计费规则，中间节点不重复计费。
+- 入口监听端口可留空，自动分配节点范围内的空闲端口；普通转发、转发链及保留端点统一避让，暂停后仍保留端口。编辑同一入口时留空会保留原端口。
+- 同一链内入口和各跳节点不能重复；被转发链使用的节点不能删除。下发失败会清理或尝试回滚，暂停状态显示红色标记。
+
+| 探测设置 | 默认值 | 可选范围 |
+| --- | --- | --- |
+| 探测间隔 | 5 分钟 | 10 秒～60 分钟 |
+| 单次超时 | 3 秒 | 1～5 秒 |
+| 切换阈值 | 1000ms | 1ms～单次超时时间 |
+
+不限制完整路径数量，同时最多执行 16 个探测。路径数为各跳候选数量的乘积，候选过多时一轮探测会变长。
+
+### 节点间传输方式
+
+入口始终同时转发 TCP 和 UDP，下面的选项决定节点之间如何承载数据：
+
+| 方式 | TCP 业务 | UDP 业务 |
+| --- | --- | --- |
+| TLS | TLS 加密中继 | 封装在 TLS 中继中 |
+| QUIC | QUIC 加密可靠流 | 封装在 QUIC 可靠流中 |
+| TCP | 明文 TCP 中继 | 封装在明文 TCP 中继中 |
+| UDP | 配套明文 TCP 中继 | 逐跳原生 UDP，无额外可靠重传层 |
+
+业务自身的加密保持原样。明文模式不额外保护链路，TCP 中继握手认证信息也不受 TLS 保护。UDP 模式的两种业务同步选路，节点防火墙需同时放行实际使用端口的 TCP 和 UDP。
+
+**选路探测的是 TCP 参考延迟，不是真实 UDP 延迟，也不能证明 UDP 可达。** 目标只监听 UDP 时，TCP 诊断和路径探测可能失败，但 UDP 业务仍可转发，按上述失败回退规则运行。同机容器验证不能代表公网游戏的延迟、抖动和丢包表现。
+
+## 安装面板
+
+面板支持 **x86_64 Linux**，使用 MySQL 5.7；节点支持 amd64 和 arm64。预先安装 Docker Engine、Docker Compose v2、curl（或 wget）、tar、sha256sum。低内存 VPS 应先准备足够的交换空间，避免安装时内存耗尽。
+
+直接在当前目录中运行：
 
 ```bash
-curl -fL --retry 2 https://github.com/Toto0912/flux-chain/releases/download/v1.0.0-beta1/panel_install.sh -o panel_install.sh
+curl -fL --retry 2 https://raw.githubusercontent.com/Toto0912/flux-chain/main/panel_install.sh -o panel_install.sh
 sudo bash panel_install.sh install
 ```
 
-脚本会下载并校验部署资源，拉取对应版本的面板与 MySQL 镜像。镜像仓库不可用时会尝试同版本的 Release 镜像包。无需在服务器上编译 Java、Node.js 或 Go。
+默认下载并校验对应 Release 的部署资源及镜像，无需在 VPS 编译。镜像仓库不可用时尝试同版本 Release 镜像包。默认前端端口 `6366`、后端端口 `6365`，安装时可修改；需要时用 `PANEL_IPV6=0` 或 `PANEL_IPV6=1` 显式选择网络配置，脚本不修改 Docker daemon 配置。
 
-默认访问端口：前端 `6366`、后端 `6365`。默认管理员为 `admin_user / admin_user`，首次登录后修改。将网站配置中的面板地址设置为节点可以访问的后端地址，再添加节点。
+默认管理员：`admin_user / admin_user`，首次登录后修改密码。在网站配置中填写节点可访问的**后端地址和端口**，然后添加节点。当前沿用原项目容器名和全局数据卷名，同一 Docker 主机只部署一套，避免与其他 Flux 面板冲突。
 
-> 发布资产必须构建完成后才能使用上述命令。预发布版本使用明确版本号，不依赖 GitHub 的 latest 地址。
+### 使用原项目数据库备份
 
-## 安装节点
+全新安装时，将备份副本命名为 `gost.sql`，放到 `panel_install.sh` 同目录，再执行安装。脚本优先使用已有 SQL，仅在不存在时下载默认初始化文件；空文件、不可读文件或目录会报错停止。数据库初始化完成并成功迁移后才启动面板；恢复后使用原账号密码。
 
-在“节点监控”添加服务器后，复制安装命令，在该节点以 root 执行。脚本会下载并校验对应架构的 FluxChain 节点。
+**SQL 仅在全新的 MySQL 数据卷初始化时导入。** 已有数据库卷不会因为替换 `gost.sql` 重新导入；已有部署应使用更新或单独规划恢复。保留原始备份、安装生成的 `.env` 和数据库卷，不要重新生成原数据库密码。
 
-手动安装示例：
+## 安装与更新节点
+
+在“节点监控”添加服务器，点击“安装”，复制在线或离线命令，在节点以 root 执行。节点需使用 systemd；安装目录 `/etc/gost`，服务名 `gost.service`。必须使用本项目定制节点，不能直接替换为原版 GOST。
+
+在线安装：
 
 ```bash
 curl -fL --retry 2 https://github.com/Toto0912/flux-chain/releases/download/v1.0.0-beta1/install.sh -o install.sh
-sudo bash install.sh -a '面板地址:6365' -s '节点密钥'
+sudo bash ./install.sh -a '面板地址:6365' -s '节点密钥'
 ```
 
-节点需使用 systemd。安装目录和服务名保留 `/etc/gost`、`gost.service`，方便兼容已有部署。必须使用本项目节点，不能直接替换为原版 GOST。
+中国大陆服务器下载较慢时，先下载同版本 `install.sh` 和 `gost-linux-amd64`，上传到节点同一目录，进入该目录执行：
 
-## 更新、离线安装与源码构建
+```bash
+# 离线安装；ARM64 节点将文件名替换为 gost-linux-arm64
+sudo bash ./install.sh -b ./gost-linux-amd64 -a '面板地址:6365' -s '节点密钥'
+# 使用本地新程序更新已有节点
+sudo bash ./install.sh -u -b ./gost-linux-amd64
+```
 
-请先阅读 [部署与升级说明](LOCAL_DEPLOYMENT.md)。更新保留原 `.env` 和数据库卷，不要通过重新安装来更新现有系统。已有转发链升级后需编辑并保存一次，下发新的探测握手配置。
+在线更新先下载目标版本脚本，再执行 `sudo bash ./install.sh -u`。脚本同目录若留有旧二进制，应移开或用 `-b` 明确指定新程序。更新保留 `config.json` 与 `gost.json`，新程序校验失败不会停止旧服务。
 
-- 在线安装：下载对应版本的脚本和发布资源。
-- 离线面板：下载 Release 的 `fluxchain-offline-amd64-v1.0.0-beta1.tar.gz`，解压后按部署说明运行。
-- 源码构建：使用本仓库的 Dockerfile 和 `PANEL_IMAGE_MODE=build`；构建依赖仍需联网获取。
-- 本地节点：使用 `build_node.sh` 编译，或下载 Release 节点文件，再通过 `install.sh -b` 安装。
+新版脚本显示下载进度并设置超时及有限重试，可用 `NODE_DOWNLOAD_TIMEOUT=600` 延长节点文件单次下载时限。服务日志用 `journalctl -u gost -n 100 --no-pager` 查看。
 
-## 发布与来源
+## 更新、源码构建与离线部署
 
-推送 `v1.0.0-beta1` 标签会触发测试、构建镜像和节点程序，随后发布安装脚本、校验清单及离线包。流程说明见 [发布指南](docs/RELEASING.md)。
+### 更新已有面板
 
-- [更新记录](CHANGELOG.md)
-- [测试范围](LINUX_CONTAINER_VALIDATION.md)
-- [第三方说明](THIRD_PARTY_NOTICES.md)
-- [许可证](LICENSE)
+在原部署目录操作：
 
-使用者应在获得授权的网络环境中使用本项目。实际公网的延迟、抖动和丢包表现需在自己的网络中验证。
+```bash
+sudo bash panel_install.sh backup
+curl -fL --retry 2 https://raw.githubusercontent.com/Toto0912/flux-chain/main/panel_install.sh -o panel_install.sh
+sudo bash panel_install.sh update
+```
+
+更新保留 `.env`、数据库和日志卷，容器重建及迁移期间面板会短暂中断。不要用重新安装替代更新，也不要删除 `mysql_data`；移动目录应保留原 Compose 项目名。卸载会删除数据，先另行保存备份。
+
+升级节点与面板后，已有转发链需编辑并保存一次，重新下发探测握手和服务配置；保存可能中断业务，请选择合适时间。建议所有节点同步更新。
+
+**当前源码包含尚未重新发布的安装及界面改进。默认在线安装仍使用已发布的 v1.0.0-beta1 资源，不会自动包含本地修改。** 使用这些改动需从当前源码构建相应面板、节点，或先发布新版本；已有 Release 脚本、镜像和离线包不会随源码自动更新。
+
+### 从当前源码构建
+
+下载完整仓库，在根目录运行（已有部署改用 `update`）：
+
+```bash
+sudo env PANEL_IMAGE_MODE=build bash panel_install.sh install
+# 编译节点，需要 Go 1.23.4+ 或 Docker，输出至 artifacts/
+bash build_node.sh amd64
+bash build_node.sh arm64
+```
+
+源码构建仍需联网获取基础镜像和编译依赖。仓库不包含依赖缓存、已编译程序、离线镜像、测试数据库或运行密钥。
+
+### 离线安装面板
+
+在联网机器下载同一 Release 的 `fluxchain-offline-amd64-v1.0.0-beta1.tar.gz` 与 `SHA256SUMS`，按清单核对该文件的 SHA-256 后上传。目标机器需预先安装 Docker 和 Compose：
+
+```bash
+mkdir fluxchain
+cd fluxchain
+tar -xzf ../fluxchain-offline-amd64-v1.0.0-beta1.tar.gz
+sudo env PANEL_IMAGE_MODE=load bash panel_install.sh install
+```
+
+离线包包含面板、MySQL 镜像及部署资源，`load` 模式不在线拉取镜像；不包含 Docker/Compose 安装程序。已有部署在原目录执行 `update`，保留 `.env`。使用旧版离线包恢复备份前，应将其中的安装脚本替换为包含 SQL 保留与迁移修复的新版脚本。
+
+## 流量统计与日志
+
+流量由节点实时上报并入库，**不依赖运行日志，日志轮转不会清除流量统计。**
+
+- Docker 日志：每份 50MB，最多保留 7 份；重建对应容器后应用。
+- 后端文件日志：约 100MB 或跨天轮转，历史归档压缩后总量上限 1GB、最长 30 天，先达到的条件先清理；当前写入文件不计入历史上限，异步清理可能短暂超出。
+- 旧版其他命名的日志需备份后单独清理；节点 journald 日志由宿主机管理。
+
+可用 `docker inspect -f '{{json .HostConfig.LogConfig}}' springboot-backend` 查看容器日志限制。
+
+## 开发与发布
+
+版本以根目录 `VERSION` 为准，前后端、节点、脚本和 Compose 保持一致。提交源码前运行 `python3 scripts/check_release.py`；不要提交 `.env`、数据库备份、节点密钥、`node_modules`、`target`、`dist` 或本机工具链。
+
+GitHub Actions 会执行后端测试、前端构建、节点探测测试和安装脚本检查。发布时先确认验证通过，更新版本及本文中的下载地址，再推送与 `VERSION` 一致的 `v版本号` 标签；首次标签为 `v1.0.0-beta1`，后续发布使用新版本号。工作流使用 `GITHUB_TOKEN` 构建并发布镜像、两种架构节点、部署包、离线包及 `SHA256SUMS`。GHCR 镜像需设为 Public 供匿名拉取。
+
+发布后仍需在全新目录验证实际下载、安装、登录、添加节点及 TCP/UDP 转发；源码构建通过不等于发布下载链路验证通过。自动测试和同机容器结果仅代表对应测试范围。
+
+## 来源与许可证
+
+- 基于 [bqlpfy/flux-panel](https://github.com/bqlpfy/flux-panel) v1.4.3，保留根目录 [Apache License 2.0](LICENSE)。
+- 节点基于 [go-gost/gost](https://github.com/go-gost/gost) 和 [go-gost/x](https://github.com/go-gost/x)，保留 Go 模块路径与内核标识；依赖许可证以各上游为准。
+- 前端基于 Vite、HeroUI、Tailwind CSS 等，保留原 [MIT 许可证及 Next UI 署名](vite-frontend/LICENSE)。
+- 验证码字体使用 Google Fonts 分发的 [Noto Sans SC](https://github.com/google/fonts/tree/main/ofl/notosanssc)，未修改字体内容，重命名为 `NotoSansSC.ttf`；完整 [SIL Open Font License 1.1](springboot-backend/src/main/resources/fonts/OFL.txt) 随源码保留。
+- 原项目背景图、滑块素材和图标沿用原资源许可，不因本项目的许可证而重新授权。
+
+请在获得授权的网络环境中使用。

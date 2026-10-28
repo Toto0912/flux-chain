@@ -26,9 +26,11 @@ case "$*" in
   "volume inspect mysql_data") exit 1 ;;
   "compose build backend frontend") exit "${MOCK_BUILD_FAIL:-0}" ;;
   "ps --format "*) printf 'springboot-backend\ngost-mysql\n' ;;
-  "inspect -f "*) echo healthy ;;
+  "inspect -f "*)
+    if [[ "${MOCK_DB_READY_FAIL:-0}" == 1 && "$*" == *State.Status* ]]; then echo exited; else echo healthy; fi ;;
+  "exec gost-mysql sh -c "*) exit "${MOCK_DB_READY_FAIL:-0}" ;;
   "exec springboot-backend env") printf 'DB_NAME=test_db\nDB_USER=test_user\nDB_PASSWORD=test_password\nDB_HOST=mysql\n' ;;
-  "exec -i gost-mysql mysql "*) cat > "$TEST_TMP/migration.sql" ;;
+  "exec -i gost-mysql mysql "*) cat > "$TEST_TMP/migration.sql"; exit "${MOCK_MIGRATION_FAIL:-0}" ;;
 esac
 MOCK
 printf '#!/bin/bash\nexit 0\n' > "$TEST_TMP/bin/sleep"
@@ -48,7 +50,31 @@ cmp "$ROOT/docker-compose-v4.yml" "$TEST_TMP/package/docker-compose.yml"
 grep -q '^compose build backend frontend$' "$TEST_TMP/docker.calls"
 grep -q '^compose up -d --no-build --pull never --force-recreate$' "$TEST_TMP/docker.calls"
 cp "$TEST_TMP/package/.env" "$TEST_TMP/env.before"
-echo 'PASS local source installation, anchored resource paths, recreation'
+grep -q '^compose up -d --no-build --pull never mysql$' "$TEST_TMP/docker.calls"
+grep -q 'CREATE TABLE IF NOT EXISTS `forward_chain`' "$TEST_TMP/migration.sql"
+python3 - "$TEST_TMP/docker.calls" <<'PY'
+from pathlib import Path
+import sys
+calls=Path(sys.argv[1]).read_text().splitlines()
+start=calls.index('compose up -d --no-build --pull never mysql')
+migration=next(i for i,c in enumerate(calls) if c.startswith('exec -i gost-mysql mysql '))
+application=calls.index('compose up -d --no-build --pull never --force-recreate')
+assert start < migration < application
+PY
+echo 'PASS first install migrates the initialized database before starting the panel'
+
+for failure in readiness migration; do
+  cp -r "$TEST_TMP/package" "$TEST_TMP/$failure"
+  rm "$TEST_TMP/$failure/.env"
+  : > "$TEST_TMP/docker.calls"
+  if [[ "$failure" == readiness ]]; then
+    if printf '17002\n17003\n' | MOCK_DB_READY_FAIL=1 "$BASH" "$TEST_TMP/$failure/panel_install.sh" install > "$TEST_TMP/$failure.out" 2>&1; then echo 'FAIL expected readiness error'; exit 1; fi
+  else
+    if printf '17002\n17003\n' | MOCK_MIGRATION_FAIL=7 "$BASH" "$TEST_TMP/$failure/panel_install.sh" install > "$TEST_TMP/$failure.out" 2>&1; then echo 'FAIL expected migration error'; exit 1; fi
+  fi
+  ! grep -q '^compose up -d --no-build --pull never --force-recreate$' "$TEST_TMP/docker.calls"
+done
+echo 'PASS database initialization/migration errors prevent panel startup'
 
 # Updating preserves credentials and includes the custom schema migration.
 : > "$TEST_TMP/docker.calls"

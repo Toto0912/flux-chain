@@ -45,7 +45,9 @@ def main():
         image = out / f"fluxchain-images-amd64-v{VERSION}.tar.gz"
         if not image.is_file():
             raise SystemExit("Image archive is missing: " + str(image))
-        entries = [(ROOT / p, p) for p in RESOURCES + ["panel_install.sh", "install.sh", "LICENSE", "README.md", "LOCAL_DEPLOYMENT.md", "PLAIN_TRANSPORTS.md", "THIRD_PARTY_NOTICES.md", "CHANGELOG.md"]]
+        entries = [(ROOT / p, p) for p in RESOURCES + ["panel_install.sh", "install.sh", "LICENSE", "README.md",
+                   "vite-frontend/LICENSE", "springboot-backend/src/main/resources/fonts/OFL.txt",
+                   "docs/images/forward-chain-overview.png", "docs/images/forward-chain-create.png"]]
         entries += [(image, "images/panel-images.tar.gz")]
         entries += [(args.nodes / ("gost-linux-" + arch), "artifacts/gost-linux-" + arch) for arch in ["amd64", "arm64"]]
         archive(out / f"fluxchain-offline-amd64-v{VERSION}.tar.gz", entries)

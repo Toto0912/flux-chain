@@ -11,7 +11,7 @@ public class ForwardChainDto {
     private String name;
     @NotNull @Positive
     private Long inNodeId;
-    @NotNull @Min(1) @Max(65535)
+    @Min(1) @Max(65535)
     private Integer inPort;
     @NotBlank
     private String targetHost;
