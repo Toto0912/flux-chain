@@ -88,20 +88,21 @@ type TcpPingResponse struct {
 }
 
 type WebSocketReporter struct {
-	url            string
-	addr           string // 保存服务器地址
-	secret         string // 保存密钥
-	version        string // 保存版本号
-	conn           *websocket.Conn
-	reconnectTime  time.Duration
-	pingInterval   time.Duration
-	configInterval time.Duration
-	ctx            context.Context
-	cancel         context.CancelFunc
-	connected      bool
-	connecting     bool              // 新增：正在连接状态
-	connMutex      sync.Mutex        // 新增：连接状态锁
-	aesCrypto      *crypto.AESCrypto // 新增：AES加密器
+	url             string
+	addr            string // 保存服务器地址
+	secret          string // 保存密钥
+	version         string // 保存版本号
+	conn            *websocket.Conn
+	reconnectTime   time.Duration
+	pingInterval    time.Duration
+	configInterval  time.Duration
+	ctx             context.Context
+	cancel          context.CancelFunc
+	connected       bool
+	connecting      bool              // 新增：正在连接状态
+	connMutex       sync.Mutex        // 新增：连接状态锁
+	aesCrypto       *crypto.AESCrypto // 新增：AES加密器
+	probeDispatcher *boundedProbeDispatcher
 }
 
 // NewWebSocketReporter 创建一个新的WebSocket报告器
@@ -118,15 +119,16 @@ func NewWebSocketReporter(serverURL string, secret string) *WebSocketReporter {
 	}
 
 	return &WebSocketReporter{
-		url:            serverURL,
-		reconnectTime:  5 * time.Second,  // 重连间隔
-		pingInterval:   2 * time.Second,  // 发送间隔改为2秒
-		configInterval: 10 * time.Minute, // 配置上报间隔
-		ctx:            ctx,
-		cancel:         cancel,
-		connected:      false,
-		connecting:     false,
-		aesCrypto:      aesCrypto,
+		url:             serverURL,
+		reconnectTime:   5 * time.Second,  // 重连间隔
+		pingInterval:    2 * time.Second,  // 发送间隔改为2秒
+		configInterval:  10 * time.Minute, // 配置上报间隔
+		ctx:             ctx,
+		cancel:          cancel,
+		connected:       false,
+		connecting:      false,
+		aesCrypto:       aesCrypto,
+		probeDispatcher: newBoundedProbeDispatcher(ctx, 16),
 	}
 }
 
@@ -468,7 +470,7 @@ func (w *WebSocketReporter) handleReceivedMessage(messageType int, message []byt
 			}
 
 			if cmdMsg.Type != "call" {
-				w.routeCommand(cmdMsg)
+				w.dispatchCommand(cmdMsg)
 			}
 		} else {
 			// 处理普通消息
@@ -479,7 +481,7 @@ func (w *WebSocketReporter) handleReceivedMessage(messageType int, message []byt
 				return
 			}
 			if cmdMsg.Type != "call" {
-				w.routeCommand(cmdMsg)
+				w.dispatchCommand(cmdMsg)
 			}
 		}
 
@@ -488,15 +490,32 @@ func (w *WebSocketReporter) handleReceivedMessage(messageType int, message []byt
 	}
 }
 
-// routeCommand 路由命令到对应的处理函数
-func (w *WebSocketReporter) routeCommand(cmd CommandMessage) {
-	jsonBytes, errs := json.Marshal(cmd)
-	if errs != nil {
-		fmt.Println("Error marshaling JSON:", errs)
+// Keep configuration commands on the ordered reader, but run slow diagnostics
+// separately with bounded admission so pause/update/delete remain responsive.
+func (w *WebSocketReporter) dispatchCommand(cmd CommandMessage) {
+	if cmd.Type != "TcpPing" {
+		w.routeCommand(cmd)
 		return
 	}
+	if !w.probeDispatcher.trySubmit(func() { w.routeCommand(cmd) }) {
+		w.sendResponse(CommandResponse{
+			Type: "TcpPingResponse", RequestId: cmd.RequestId,
+			Success: false, Message: "节点探测并发已满，请稍后重试",
+			Data: TcpPingResponse{Success: false, ErrorMessage: "节点探测并发已满，请稍后重试"},
+		})
+	}
+}
 
-	fmt.Println("🔔 收到命令: ", string(jsonBytes))
+// routeCommand 路由命令到对应的处理函数
+func (w *WebSocketReporter) routeCommand(cmd CommandMessage) {
+	if cmd.Type != "TcpPing" {
+		jsonBytes, errs := json.Marshal(cmd)
+		if errs != nil {
+			fmt.Println("Error marshaling JSON:", errs)
+			return
+		}
+		fmt.Println("🔔 收到命令: ", string(jsonBytes))
+	}
 	var err error
 	var response CommandResponse
 
@@ -568,13 +587,15 @@ func (w *WebSocketReporter) routeCommand(cmd CommandMessage) {
 
 	// 发送响应
 	if err != nil {
-		saveConfig()
 		response.Success = false
 		response.Message = err.Error()
 	} else {
-		saveConfig()
 		response.Success = true
 		response.Message = "OK"
+	}
+	// Probes are read-only and may run concurrently; do not rewrite gost.json.
+	if cmd.Type != "TcpPing" {
+		saveConfig()
 	}
 
 	w.sendResponse(response)

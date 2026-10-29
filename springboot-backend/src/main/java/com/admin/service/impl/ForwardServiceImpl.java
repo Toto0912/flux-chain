@@ -1,6 +1,7 @@
 package com.admin.service.impl;
 
 import com.admin.common.dto.ForwardDto;
+import com.admin.common.annotation.SerializeNodePorts;
 import com.admin.common.dto.ForwardUpdateDto;
 import com.admin.common.dto.ForwardWithTunnelDto;
 import com.admin.common.dto.GostDto;
@@ -68,6 +69,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
 
 
     @Override
+    @SerializeNodePorts
     public R createForward(ForwardDto forwardDto) {
         // 1. 获取当前用户信息
         UserInfo currentUser = getCurrentUserInfo();
@@ -132,6 +134,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
     }
 
     @Override
+    @SerializeNodePorts
     public R updateForward(ForwardUpdateDto forwardUpdateDto) {
         // 1. 获取当前用户信息
         UserInfo currentUser = getCurrentUserInfo();
@@ -246,6 +249,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
     }
 
     @Override
+    @SerializeNodePorts
     public R deleteForward(Long id) {
         // 1. 获取当前用户信息
         UserInfo currentUser = getCurrentUserInfo();
@@ -306,6 +310,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
     }
 
     @Override
+    @SerializeNodePorts
     public R forceDeleteForward(Long id) {
         // 1. 获取当前用户信息
         UserInfo currentUser = getCurrentUserInfo();

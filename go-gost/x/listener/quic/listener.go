@@ -2,8 +2,10 @@ package quic
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strings"
+	"sync"
 
 	"github.com/go-gost/core/limiter"
 	"github.com/go-gost/core/listener"
@@ -25,12 +27,15 @@ func init() {
 }
 
 type quicListener struct {
-	ln      quic.EarlyListener
-	cqueue  chan net.Conn
-	errChan chan error
-	logger  logger.Logger
-	md      metadata
-	options listener.Options
+	ln         *quic.EarlyListener
+	packetConn net.PacketConn
+	closeOnce  sync.Once
+	closeErr   error
+	cqueue     chan net.Conn
+	errChan    chan error
+	logger     logger.Logger
+	md         metadata
+	options    listener.Options
 }
 
 func NewListener(opts ...listener.Option) listener.Listener {
@@ -68,6 +73,11 @@ func (l *quicListener) Init(md md.Metadata) (err error) {
 	if err != nil {
 		return
 	}
+	defer func() {
+		if err != nil {
+			_ = conn.Close()
+		}
+	}()
 	if l.md.cipherKey != nil {
 		conn = quic_util.CipherPacketConn(conn, l.md.cipherKey)
 	}
@@ -104,7 +114,8 @@ func (l *quicListener) Init(md md.Metadata) (err error) {
 		return
 	}
 
-	l.ln = *ln
+	l.ln = ln
+	l.packetConn = conn
 	l.cqueue = make(chan net.Conn, l.md.backlog)
 	l.errChan = make(chan error, 1)
 
@@ -135,10 +146,25 @@ func (l *quicListener) Accept() (conn net.Conn, err error) {
 }
 
 func (l *quicListener) Close() error {
-	return l.ln.Close()
+	l.closeOnce.Do(func() {
+		if l.ln != nil {
+			l.closeErr = l.ln.Close()
+		}
+		// ListenEarly receives an externally-owned PacketConn. Closing the QUIC
+		// listener alone does not release that UDP socket.
+		if l.packetConn != nil {
+			if err := l.packetConn.Close(); l.closeErr == nil && !errors.Is(err, net.ErrClosed) {
+				l.closeErr = err
+			}
+		}
+	})
+	return l.closeErr
 }
 
 func (l *quicListener) Addr() net.Addr {
+	if l.ln == nil {
+		return nil
+	}
 	return l.ln.Addr()
 }
 

@@ -353,6 +353,9 @@ public class GostUtil {
         if (Objects.equals(protocol, "udp")){
             JSONObject metadata = new JSONObject();
             metadata.put("keepAlive", true);
+            // A listener otherwise falls back to 8192 bytes and silently
+            // truncates larger datagrams. Use a string for older agent parsers.
+            metadata.put("readBufferSize", "65535");
             listener.put("metadata", metadata);
         }
         return listener;

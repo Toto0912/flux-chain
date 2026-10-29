@@ -1,6 +1,7 @@
 package com.admin.service.impl;
 
 import com.admin.common.dto.ForwardChainDto;
+import com.admin.common.annotation.SerializeNodePorts;
 import com.admin.common.dto.GostDto;
 import com.admin.common.lang.R;
 import com.admin.common.utils.GostUtil;
@@ -8,6 +9,7 @@ import com.admin.entity.ForwardChain;
 import com.admin.entity.Node;
 import com.admin.mapper.ForwardChainMapper;
 import com.admin.service.ForwardChainService;
+import com.admin.service.ForwardChainProbeExecutor;
 import com.admin.service.NodePortUsageService;
 import com.admin.service.NodeService;
 import com.alibaba.fastjson.JSON;
@@ -20,7 +22,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import javax.annotation.Resource;
 import java.util.*;
-import java.util.concurrent.*;
 import java.util.stream.Collectors;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -34,11 +35,9 @@ public class ForwardChainServiceImpl extends ServiceImpl<ForwardChainMapper, For
     private static final int DEFAULT_SWITCH_THRESHOLD_MS = 1000;
     private static final long RETIRED_ENDPOINT_PORT_GRACE_MS = 60000L;
     private static final String SERVICE_PREFIX = "fc_";
-    private static final ExecutorService chainWorkers = Executors.newFixedThreadPool(2);
-    private static final ExecutorService probeWorkers = Executors.newFixedThreadPool(16);
-
     @Resource private NodeService nodeService;
     @Resource private NodePortUsageService portUsageService;
+    @Resource private ForwardChainProbeExecutor probeExecutor;
 
     @Override
     public R listChains() {
@@ -48,6 +47,7 @@ public class ForwardChainServiceImpl extends ServiceImpl<ForwardChainMapper, For
 
     @Override
     @Transactional
+    @SerializeNodePorts
     public synchronized R createChain(ForwardChainDto dto) {
         String error = validate(dto, null);
         if (error != null) return R.err(error);
@@ -75,6 +75,7 @@ public class ForwardChainServiceImpl extends ServiceImpl<ForwardChainMapper, For
 
     @Override
     @Transactional
+    @SerializeNodePorts
     public synchronized R updateChain(ForwardChainDto dto) {
         if (dto.getId() == null) return R.err("缺少转发链ID");
         ForwardChain existing = getById(dto.getId());
@@ -116,6 +117,7 @@ public class ForwardChainServiceImpl extends ServiceImpl<ForwardChainMapper, For
 
     @Override
     @Transactional
+    @SerializeNodePorts
     public synchronized R deleteChain(Long id) {
         ForwardChain chain = getById(id);
         if (chain == null) return R.err("转发链不存在");
@@ -624,11 +626,11 @@ public class ForwardChainServiceImpl extends ServiceImpl<ForwardChainMapper, For
 
     private synchronized void probeDueChains() {
         long now = System.currentTimeMillis();
-        for (ForwardChain chain : list(new QueryWrapper<ForwardChain>().eq("status", 1))) {
+        // Oldest/unstarted cycles get the next free queue slot; a busy panel
+        // must not continually requeue earlier IDs ahead of unstarted chains.
+        for (ForwardChain chain : list(new QueryWrapper<ForwardChain>().eq("status", 1).orderByAsc("last_probe_time", "id"))) {
             if (chain.getLastProbeTime() != null && now - chain.getLastProbeTime() < chain.getProbeIntervalMs()) continue;
-            chain.setLastProbeTime(now);
-            updateById(chain);
-            chainWorkers.submit(() -> runProbeCycle(chain.getId()));
+            probeExecutor.submitIfIdle(chain.getId(), () -> runProbeCycle(chain.getId()));
         }
     }
 
@@ -636,17 +638,24 @@ public class ForwardChainServiceImpl extends ServiceImpl<ForwardChainMapper, For
     public void scheduleProbes() { probeDueChains(); }
 
     private void runProbeCycle(Long id) {
-            ForwardChain chain = getById(id);
+        ForwardChain chain;
+        synchronized (this) {
+            chain = getById(id);
             if (chain == null || !Objects.equals(chain.getStatus(), 1)) return;
-            JSONArray paths = JSON.parseArray(chain.getPathsJson());
-            List<CompletableFuture<Void>> checks = new ArrayList<>();
-            for (int i = 0; i < paths.size(); i++) {
-                final int index = i;
-                checks.add(CompletableFuture.runAsync(() -> probePath(chain, paths.getJSONObject(index)), probeWorkers));
-            }
-            try { CompletableFuture.allOf(checks.toArray(new CompletableFuture[0])).get(chain.getProbeTimeoutMs() + 15000L, TimeUnit.MILLISECONDS); }
-            catch (Exception e) { log.warn("转发链 {} 的部分探测未能及时完成: {}", id, e.getMessage()); }
+            // Measure intervals from actual execution, not time spent in the queue.
+            chain.setLastProbeTime(System.currentTimeMillis());
+            updateById(chain);
+        }
+        JSONArray paths = JSON.parseArray(chain.getPathsJson());
+        try {
+            // Wait for the whole cycle. A fixed timeout for all paths used to
+            // release the chain while slower paths were still being probed.
+            probeExecutor.probePaths(paths.size(), index -> probePath(chain, paths.getJSONObject(index)));
             applyProbeResults(chain);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.info("转发链 {} 探测已中断", id);
+        }
     }
 
     private synchronized void applyProbeResults(ForwardChain chain) {
@@ -676,13 +685,19 @@ public class ForwardChainServiceImpl extends ServiceImpl<ForwardChainMapper, For
 
     private void probePath(ForwardChain chain, JSONObject path) {
         Long entryId = chain.getInNodeId();
-        GostDto result = GostUtil.TcpPingThroughChain(entryId, path.getString("name"), chain.getTargetHost(), chain.getTargetPort(), chain.getProbeTimeoutMs());
-        JSONObject data = result.getData() instanceof JSONObject ? (JSONObject) result.getData() : (result.getData() == null ? new JSONObject() : JSON.parseObject(JSON.toJSONString(result.getData())));
-        boolean ok = result.getCode() != null && result.getCode() == 0 && Boolean.TRUE.equals(data.getBoolean("success"));
-        path.put("available", ok);
-        path.put("latencyMs", ok ? data.getDouble("averageTime") : null);
+        try {
+            GostDto result = GostUtil.TcpPingThroughChain(entryId, path.getString("name"), chain.getTargetHost(), chain.getTargetPort(), chain.getProbeTimeoutMs());
+            JSONObject data = result == null || result.getData() == null ? new JSONObject() : JSON.parseObject(JSON.toJSONString(result.getData()));
+            boolean ok = result != null && result.getCode() != null && result.getCode() == 0 && Boolean.TRUE.equals(data.getBoolean("success"));
+            path.put("available", ok);
+            path.put("latencyMs", ok ? data.getDouble("averageTime") : null);
+            path.put("error", ok ? null : (data.getString("errorMessage") != null ? data.getString("errorMessage") : result == null ? "节点无响应" : result.getMsg()));
+        } catch (Exception e) {
+            path.put("available", false);
+            path.put("latencyMs", null);
+            path.put("error", "探测失败：" + e.getMessage());
+        }
         path.put("lastProbeTime", System.currentTimeMillis());
-        path.put("error", ok ? null : (data.getString("errorMessage") != null ? data.getString("errorMessage") : result.getMsg()));
         synchronized (this) {
             ForwardChain latest = getById(chain.getId());
             if (!sameDeployment(chain, latest)) return;

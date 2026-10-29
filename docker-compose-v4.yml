@@ -34,7 +34,7 @@ services:
 
   backend:
     logging: *default-logging
-    image: ${BACKEND_IMAGE:-ghcr.io/toto0912/flux-chain-backend:1.0.0-beta1}
+    image: ${BACKEND_IMAGE:-ghcr.io/toto0912/flux-chain-backend:1.0.0}
     build: ./springboot-backend
     container_name: springboot-backend
     restart: unless-stopped
@@ -64,7 +64,7 @@ services:
 
   frontend:
     logging: *default-logging
-    image: ${FRONTEND_IMAGE:-ghcr.io/toto0912/flux-chain-frontend:1.0.0-beta1}
+    image: ${FRONTEND_IMAGE:-ghcr.io/toto0912/flux-chain-frontend:1.0.0}
     build: ./vite-frontend
     container_name: vite-frontend
     restart: unless-stopped

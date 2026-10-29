@@ -8,7 +8,7 @@ export LC_ALL=C
 
 
 # 安装和更新仅使用 Toto0912/flux-chain 的匹配版本资源。
-RELEASE_VERSION="1.0.0-beta1"
+RELEASE_VERSION="1.0.0"
 RELEASE_URL="https://github.com/Toto0912/flux-chain/releases/download/v$RELEASE_VERSION"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -170,7 +170,7 @@ check_ipv6_support() {
 # 显示菜单
 show_menu() {
   echo "==============================================="
-  echo "          FluxChain v1.0.0-beta1 面板管理脚本"
+  echo "          FluxChain v1.0.0 面板管理脚本"
   echo "==============================================="
   echo "请选择操作："
   echo "1. 安装面板"

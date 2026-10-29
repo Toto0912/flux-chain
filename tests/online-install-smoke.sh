@@ -5,7 +5,7 @@ TEST_TMP=$(mktemp -d)
 trap 'rm -rf -- "$TEST_TMP"' EXIT
 mkdir -p "$TEST_TMP/nodes" "$TEST_TMP/release" "$TEST_TMP/site"
 for arch in amd64 arm64; do
-  printf '#!%s\necho "FluxChain Node 1.0.0-beta1"\n' "$BASH" > "$TEST_TMP/nodes/gost-linux-$arch"
+  printf '#!%s\necho "FluxChain Node 1.0.0"\n' "$BASH" > "$TEST_TMP/nodes/gost-linux-$arch"
 done
 python3 "$ROOT/scripts/package_release.py" --nodes "$TEST_TMP/nodes" --output "$TEST_TMP/release"
 VERSION=$(cat "$ROOT/VERSION")
@@ -60,7 +60,7 @@ source "$TEST_TMP/site/install.sh"
 download_node_file() { cp "$TEST_TMP/release/${1##*/}" "$2"; }
 INSTALL_DIR="$TEST_TMP/node-install"
 stage_binary
-"$INSTALL_DIR/gost.new" -V | grep -q 'FluxChain Node 1.0.0-beta1'
+"$INSTALL_DIR/gost.new" -V | grep -q 'FluxChain Node 1.0.0'
 echo 'PASS node downloads the matching architecture and validates before installation'
 
 printf 'corruption' >> "$TEST_TMP/release/gost-linux-amd64"

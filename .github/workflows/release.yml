@@ -50,7 +50,8 @@ jobs:
       - name: Node probe tests and compile
         working-directory: go-gost
         run: |
-          go test x/socket/probe_context.go x/socket/probe_context_test.go -count=1
+          go test x/socket/probe_context.go x/socket/probe_context_test.go x/socket/probe_dispatch.go x/socket/probe_dispatch_test.go -count=1
+          go test -mod=readonly github.com/go-gost/x/listener/quic -count=1
           CGO_ENABLED=0 go build -mod=readonly -trimpath -o /tmp/fluxchain-node .
           cd /tmp
           ./fluxchain-node -V
@@ -160,7 +161,7 @@ jobs:
           set -euo pipefail
           version=$(cat VERSION)
           python3 scripts/check_release.py "$GITHUB_REF_NAME"
-          release_notes="FluxChain v$version：管理员多跳转发链、完整路径 TCP 参考延迟选路及 TLS/QUIC/TCP/UDP 节点链路。本次沿用 beta1 版本号更新手机端导航与布局、入口端口自动分配、节点在线/离线安装说明及数据库备份安装逻辑。已有部署需重新下载安装脚本并执行 update；离线部署请重新下载离线包和 SHA256SUMS。安装、升级和使用提醒见 https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/README.md 。"
+          release_notes="FluxChain v$version 首个正式版本：管理员多跳转发链、完整路径 TCP 参考延迟选路及 TLS/QUIC/TCP/UDP 节点链路；支持移动端、入口端口自动分配、节点在线与离线安装、原项目数据库备份恢复及日志轮转。包含探测并发与队列控制、端口分配互斥、UDP 大报文处理及 QUIC 端口释放修复。测试版用户请更新面板和全部节点，已有转发链编辑保存一次；离线部署请使用同版本离线包和 SHA256SUMS。安装、升级及探测边界说明见 https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/README.md 。"
           if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release create "$GITHUB_REF_NAME" --verify-tag --draft --title "FluxChain v$version" --notes "$release_notes"
           fi

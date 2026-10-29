@@ -4,7 +4,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>com.admin</groupId>
     <artifactId>flux-chain-backend</artifactId>
-    <version>1.0.0-beta1</version>
+    <version>1.0.0</version>
     <name>FluxChain</name>
     <description>FluxChain forwarding management panel</description>
     <properties>

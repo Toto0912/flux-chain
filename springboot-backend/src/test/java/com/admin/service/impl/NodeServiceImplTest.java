@@ -39,7 +39,7 @@ class NodeServiceImplTest {
         R response = service.getInstallCommand(1L);
         assertEquals(0, response.getCode());
         String command = response.getData().toString();
-        assertTrue(command.startsWith("curl -fL --retry 2 https://github.com/Toto0912/flux-chain/releases/download/v1.0.0-beta1/install.sh"));
+        assertTrue(command.startsWith("curl -fL --retry 2 https://github.com/Toto0912/flux-chain/releases/download/v1.0.0/install.sh"));
         assertTrue(command.contains("-o install.sh && bash ./install.sh -a '"));
         assertTrue(command.contains("-s 'node'\"'\"'s-key'"));
         assertFalse(command.contains("bqlpfy"));

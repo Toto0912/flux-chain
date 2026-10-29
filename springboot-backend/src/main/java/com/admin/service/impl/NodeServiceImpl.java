@@ -406,7 +406,7 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
         StringBuilder command = new StringBuilder();
         
         // 固定发布版本，自动获取 FluxChain 修改版节点；参数始终经过 shell 转义。
-        command.append("curl -fL --retry 2 https://github.com/Toto0912/flux-chain/releases/download/v1.0.0-beta1/install.sh -o install.sh && bash ./install.sh");
+        command.append("curl -fL --retry 2 https://github.com/Toto0912/flux-chain/releases/download/v1.0.0/install.sh -o install.sh && bash ./install.sh");
         
         // 处理服务器地址，如果是IPv6需要添加方括号
         String processedServerAddr = processServerAddress(viteConfig.getValue());

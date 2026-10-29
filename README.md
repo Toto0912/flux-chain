@@ -1,6 +1,6 @@
 # FluxChain
 
-**v1.0.0-beta1** · 基于 GOST 的转发管理面板，支持多跳转发链、完整路径探测和自动选路。
+**v1.0.0** · 基于 GOST 的转发管理面板，支持多跳转发链、完整路径探测和自动选路。
 
 基于 [Flux Panel v1.4.3](https://github.com/bqlpfy/flux-panel) 二次开发，保留上游署名和许可证。项目地址：[Toto0912/flux-chain](https://github.com/Toto0912/flux-chain)。
 
@@ -29,7 +29,7 @@
 | 单次超时 | 3 秒 | 1～5 秒 |
 | 切换阈值 | 1000ms | 1ms～单次超时时间 |
 
-不限制完整路径数量，同时最多执行 16 个探测。路径数为各跳候选数量的乘积，候选过多时一轮探测会变长。
+不限制完整路径数量，同时最多执行 16 个探测。同一条链上一轮探测未完成时，不重复排队；等待中的任务也受并发队列限制，空闲后自动重试。路径数为各跳候选数量的乘积，候选过多时一轮探测会变长。
 
 ### 节点间传输方式
 
@@ -43,6 +43,8 @@
 | UDP | 配套明文 TCP 中继 | 逐跳原生 UDP，无额外可靠重传层 |
 
 业务自身的加密保持原样。明文模式不额外保护链路，TCP 中继握手认证信息也不受 TLS 保护。UDP 模式的两种业务同步选路，节点防火墙需同时放行实际使用端口的 TCP 和 UDP。
+
+普通转发、隧道转发及转发链的 UDP 入口均配置完整报文缓冲区，避免默认 8KB 缓冲区截断大报文。已有普通转发升级后需编辑保存一次，重新下发监听配置。
 
 **选路探测的是 TCP 参考延迟，不是真实 UDP 延迟，也不能证明 UDP 可达。** 目标只监听 UDP 时，TCP 诊断和路径探测可能失败，但 UDP 业务仍可转发，按上述失败回退规则运行。同机容器验证不能代表公网游戏的延迟、抖动和丢包表现。
 
@@ -74,7 +76,7 @@ sudo bash panel_install.sh install
 在线安装：
 
 ```bash
-curl -fL --retry 2 https://github.com/Toto0912/flux-chain/releases/download/v1.0.0-beta1/install.sh -o install.sh
+curl -fL --retry 2 https://github.com/Toto0912/flux-chain/releases/download/v1.0.0/install.sh -o install.sh
 sudo bash ./install.sh -a '面板地址:6365' -s '节点密钥'
 ```
 
@@ -105,9 +107,11 @@ sudo bash panel_install.sh update
 
 更新保留 `.env`、数据库和日志卷，容器重建及迁移期间面板会短暂中断。不要用重新安装替代更新，也不要删除 `mysql_data`；移动目录应保留原 Compose 项目名。卸载会删除数据，先另行保存备份。
 
-升级节点与面板后，已有转发链需编辑并保存一次，重新下发探测握手和服务配置；保存可能中断业务，请选择合适时间。建议所有节点同步更新。
+当前单后端部署中，普通转发与转发链共享端口配置锁，覆盖端口分配、下发及数据库提交，防止同时创建或修改时争用端口；不影响正常转发流量。
 
-**本次更新沿用 v1.0.0-beta1 版本号。** 使用旧版部署的用户仍需重新下载当前安装脚本并执行 `update`，才能拉取更新后的面板镜像；离线部署请重新下载对应离线包与校验清单。版本号不变不代表程序内容未更新。
+升级节点与面板后，已有转发链需编辑并保存一次，重新下发探测握手和服务配置；保存可能中断业务，请选择合适时间。探测并发隔离及 QUIC 端口释放修复需要使用更新后的节点程序，建议入口和各跳节点同步更新；慢探测不会再串行阻塞管理命令，QUIC 服务删除后会释放底层 UDP 端口。
+
+**v1.0.0 为首个正式版本。** 测试版部署可按上述步骤更新至正式版；节点需使用同一正式版本。离线部署请下载 v1.0.0 离线包与校验清单，不再使用测试版资源。
 
 ### 从当前源码构建
 
@@ -124,12 +128,12 @@ bash build_node.sh arm64
 
 ### 离线安装面板
 
-在联网机器下载同一 Release 的 `fluxchain-offline-amd64-v1.0.0-beta1.tar.gz` 与 `SHA256SUMS`，按清单核对该文件的 SHA-256 后上传。目标机器需预先安装 Docker 和 Compose：
+在联网机器下载同一 Release 的 `fluxchain-offline-amd64-v1.0.0.tar.gz` 与 `SHA256SUMS`，按清单核对该文件的 SHA-256 后上传。目标机器需预先安装 Docker 和 Compose：
 
 ```bash
 mkdir fluxchain
 cd fluxchain
-tar -xzf ../fluxchain-offline-amd64-v1.0.0-beta1.tar.gz
+tar -xzf ../fluxchain-offline-amd64-v1.0.0.tar.gz
 sudo env PANEL_IMAGE_MODE=load bash panel_install.sh install
 ```
 
@@ -149,7 +153,7 @@ sudo env PANEL_IMAGE_MODE=load bash panel_install.sh install
 
 版本以根目录 `VERSION` 为准，前后端、节点、脚本和 Compose 保持一致。提交源码前运行 `python3 scripts/check_release.py`；不要提交 `.env`、数据库备份、节点密钥、`node_modules`、`target`、`dist` 或本机工具链。
 
-GitHub Actions 会执行后端测试、前端构建、节点探测测试和安装脚本检查。发布时先确认验证通过，再推送与 `VERSION` 一致的 `v版本号` 标签。后续通常使用新版本号并更新本文下载地址；沿用原版本号覆盖发布时，需同步更新标签、镜像、附件及 `SHA256SUMS`，已有部署需主动更新。工作流使用 `GITHUB_TOKEN` 构建并发布镜像、两种架构节点、部署包、离线包及校验清单。GHCR 镜像需设为 Public 供匿名拉取。
+GitHub Actions 会执行后端测试、前端构建、节点探测测试和安装脚本检查。发布时先确认验证通过，再推送与 `VERSION` 一致的 `v版本号` 标签。后续发布使用新版本号并更新本文下载地址，确保标签、镜像、附件及 `SHA256SUMS` 对应同一份源码。工作流使用 `GITHUB_TOKEN` 构建并发布镜像、两种架构节点、部署包、离线包及校验清单。GHCR 镜像需设为 Public 供匿名拉取。
 
 发布后仍需在全新目录验证实际下载、安装、登录、添加节点及 TCP/UDP 转发；源码构建通过不等于发布下载链路验证通过。自动测试和同机容器结果仅代表对应测试范围。
 
