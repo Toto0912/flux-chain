@@ -1,6 +1,6 @@
 #!/bin/bash
 # 自动获取同版本的节点程序，也支持 -b 指定离线文件。
-RELEASE_VERSION="1.0.0"
+RELEASE_VERSION="1.0.1"
 RELEASE_URL="https://github.com/Toto0912/flux-chain/releases/download/v$RELEASE_VERSION"
 set -e
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -9,7 +9,7 @@ SERVICE_FILE="/etc/systemd/system/gost.service"
 NODE_DOWNLOAD_DIR=""
 
 usage() {
-  echo "FluxChain v1.0.0 节点安装脚本
+  echo "FluxChain v1.0.1 节点安装脚本
 用法: sudo bash install.sh [-a 面板地址 -s 节点密钥] [-b 本地节点文件] [-u]"
   echo "-u 更新节点并保留现有配置；不提供参数时显示菜单。"
 }

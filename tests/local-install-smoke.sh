@@ -24,6 +24,7 @@ cat > "$TEST_TMP/bin/docker" <<'MOCK'
 printf '%s\n' "$*" >> "$TEST_TMP/docker.calls"
 case "$*" in
   "volume inspect mysql_data") exit 1 ;;
+  "network inspect gost-network "*) exit 1 ;;
   "compose build backend frontend") exit "${MOCK_BUILD_FAIL:-0}" ;;
   "ps --format "*) printf 'springboot-backend\ngost-mysql\n' ;;
   "inspect -f "*)

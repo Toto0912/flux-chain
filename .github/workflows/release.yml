@@ -39,6 +39,7 @@ jobs:
           for script in panel_install.sh install.sh build_node.sh; do bash -n "$script"; done
           bash tests/local-install-smoke.sh
           bash tests/online-install-smoke.sh
+          bash tests/network-mode-smoke.sh
       - name: Backend tests
         run: mvn -B -f springboot-backend/pom.xml test
       - name: Frontend production build
@@ -151,7 +152,10 @@ jobs:
           mkdir -p /tmp/fluxchain-install-check
           tar -xzf "dist/fluxchain-offline-amd64-v$version.tar.gz" -C /tmp/fluxchain-install-check
           cd /tmp/fluxchain-install-check
-          printf '16366\n16365\n' | sudo env PANEL_IMAGE_MODE=load PANEL_IPV6=0 bash panel_install.sh install
+          ipv6_forward_before=$(cat /proc/sys/net/ipv6/conf/all/forwarding)
+          printf '16366\n16365\n' | sudo env -u PANEL_IPV6 PANEL_IMAGE_MODE=load bash panel_install.sh install
+          test "$(cat /proc/sys/net/ipv6/conf/all/forwarding)" = "$ipv6_forward_before"
+          test "$(docker network inspect gost-network --format '{{.EnableIPv6}}')" = false
           cd "$GITHUB_WORKSPACE"
           python3 scripts/verify_install.py
       - name: Publish complete release
@@ -161,7 +165,7 @@ jobs:
           set -euo pipefail
           version=$(cat VERSION)
           python3 scripts/check_release.py "$GITHUB_REF_NAME"
-          release_notes="FluxChain v$version 首个正式版本：管理员多跳转发链、完整路径 TCP 参考延迟选路及 TLS/QUIC/TCP/UDP 节点链路；支持移动端、入口端口自动分配、节点在线与离线安装、原项目数据库备份恢复及日志轮转。包含探测并发与队列控制、端口分配互斥、UDP 大报文处理及 QUIC 端口释放修复。测试版用户请更新面板和全部节点，已有转发链编辑保存一次；离线部署请使用同版本离线包和 SHA256SUMS。安装、升级及探测边界说明见 https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/README.md 。"
+          release_notes="FluxChain v$version 修复安装时的 IPv6 网络兼容问题：默认使用 IPv4 容器内网，不再自动启用容器 IPv6；保留 Docker 默认代理下的宿主机 IPv6 端口访问。显式 PANEL_IPV6=1 会进行只读 RA 安全检查，发现转发冲突时停止，不自动修改宿主机配置。已有网络模式不匹配时提前停止，避免隐式重建。旧版 IPv6 部署的保留与迁移说明见 https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/README.md 。"
           if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release create "$GITHUB_REF_NAME" --verify-tag --draft --title "FluxChain v$version" --notes "$release_notes"
           fi

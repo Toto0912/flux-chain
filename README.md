@@ -1,6 +1,6 @@
 # FluxChain
 
-**v1.0.0** · 基于 GOST 的转发管理面板，支持多跳转发链、完整路径探测和自动选路。
+**v1.0.1** · 基于 GOST 的转发管理面板，支持多跳转发链、完整路径探测和自动选路。
 
 基于 [Flux Panel v1.4.3](https://github.com/bqlpfy/flux-panel) 二次开发，保留上游署名和许可证。项目地址：[Toto0912/flux-chain](https://github.com/Toto0912/flux-chain)。
 
@@ -59,7 +59,11 @@ curl -fL --retry 2 https://raw.githubusercontent.com/Toto0912/flux-chain/main/pa
 sudo bash panel_install.sh install
 ```
 
-默认下载并校验对应 Release 的部署资源及镜像，无需在 VPS 编译。镜像仓库不可用时尝试同版本 Release 镜像包。默认前端端口 `6366`、后端端口 `6365`，安装时可修改；需要时用 `PANEL_IPV6=0` 或 `PANEL_IPV6=1` 显式选择网络配置，脚本不修改 Docker daemon 配置。
+默认下载并校验对应 Release 的部署资源及镜像，无需在 VPS 编译。镜像仓库不可用时尝试同版本 Release 镜像包。默认前端端口 `6366`、后端端口 `6365`，安装时可修改。
+
+**v1.0.1 起默认仅使用 IPv4 容器内网**；不再根据宿主机 IPv6 地址自动创建 IPv6 桥接网络。`PANEL_IPV6=0` 与旧值 `auto` 均选择 IPv4 内网。宿主机 IPv6 访问可由 Docker 默认开启的 `userland-proxy` 转至 IPv4 容器，因此节点仍可通过 IPv6 连接面板，节点上的 IPv6 转发不受影响；面板容器自身没有原生 IPv6 出站能力。若服务器关闭了该代理，脚本不会擅自更改 Docker 配置，应由管理员另行安排 IPv6 入口代理。
+
+只有明确需要容器原生 IPv6 时才使用 `sudo env PANEL_IPV6=1 bash panel_install.sh install`。脚本会只读检查依赖 RA 的网卡；当 `accept_ra` 不为 `2` 或无法完成检查时停止，防止 Docker 开启 IPv6 转发后默认路由过期。脚本不修改宿主机 sysctl、路由、网卡配置或 Docker daemon 配置；Docker 正常创建桥接、端口映射及防火墙规则的行为仍然存在。
 
 默认管理员：`admin_user / admin_user`，首次登录后修改密码。在网站配置中填写节点可访问的**后端地址和端口**，然后添加节点。当前沿用原项目容器名和全局数据卷名，同一 Docker 主机只部署一套，避免与其他 Flux 面板冲突。
 
@@ -76,7 +80,7 @@ sudo bash panel_install.sh install
 在线安装：
 
 ```bash
-curl -fL --retry 2 https://github.com/Toto0912/flux-chain/releases/download/v1.0.0/install.sh -o install.sh
+curl -fL --retry 2 https://github.com/Toto0912/flux-chain/releases/download/v1.0.1/install.sh -o install.sh
 sudo bash ./install.sh -a '面板地址:6365' -s '节点密钥'
 ```
 
@@ -105,13 +109,15 @@ curl -fL --retry 2 https://raw.githubusercontent.com/Toto0912/flux-chain/main/pa
 sudo bash panel_install.sh update
 ```
 
+已有 `gost-network` 的网络模式与本次选择不一致时，安装或更新会提前停止，不会自动删除网络或改变数据卷。旧版 IPv6 部署若保留原模式，使用 `sudo env PANEL_IPV6=1 bash panel_install.sh update`，仍须通过上述 RA 安全检查。改用 IPv4 内网应先备份，并在维护窗口停止此面板的容器、移除仅属于该面板的旧网络，再以 IPv4 配置重建；保留 `.env` 和全部数据卷，不使用 `--volumes`。删除 IPv6 网络不会自动撤销 Docker 已改变的宿主机转发参数，不能直接删除先前的 RA 修复；还原原网络参数需要管理员单独确认。
+
 更新保留 `.env`、数据库和日志卷，容器重建及迁移期间面板会短暂中断。不要用重新安装替代更新，也不要删除 `mysql_data`；移动目录应保留原 Compose 项目名。卸载会删除数据，先另行保存备份。
 
 当前单后端部署中，普通转发与转发链共享端口配置锁，覆盖端口分配、下发及数据库提交，防止同时创建或修改时争用端口；不影响正常转发流量。
 
 升级节点与面板后，已有转发链需编辑并保存一次，重新下发探测握手和服务配置；保存可能中断业务，请选择合适时间。探测并发隔离及 QUIC 端口释放修复需要使用更新后的节点程序，建议入口和各跳节点同步更新；慢探测不会再串行阻塞管理命令，QUIC 服务删除后会释放底层 UDP 端口。
 
-**v1.0.0 为首个正式版本。** 测试版部署可按上述步骤更新至正式版；节点需使用同一正式版本。离线部署请下载 v1.0.0 离线包与校验清单，不再使用测试版资源。
+**v1.0.0 为首个正式版本。** 测试版部署可按上述步骤更新至正式版；节点需使用同一正式版本。离线部署请下载当前版本离线包与校验清单，不再使用测试版资源。
 
 ### 从当前源码构建
 
@@ -128,12 +134,12 @@ bash build_node.sh arm64
 
 ### 离线安装面板
 
-在联网机器下载同一 Release 的 `fluxchain-offline-amd64-v1.0.0.tar.gz` 与 `SHA256SUMS`，按清单核对该文件的 SHA-256 后上传。目标机器需预先安装 Docker 和 Compose：
+在联网机器下载同一 Release 的 `fluxchain-offline-amd64-v1.0.1.tar.gz` 与 `SHA256SUMS`，按清单核对该文件的 SHA-256 后上传。目标机器需预先安装 Docker 和 Compose：
 
 ```bash
 mkdir fluxchain
 cd fluxchain
-tar -xzf ../fluxchain-offline-amd64-v1.0.0.tar.gz
+tar -xzf ../fluxchain-offline-amd64-v1.0.1.tar.gz
 sudo env PANEL_IMAGE_MODE=load bash panel_install.sh install
 ```
 

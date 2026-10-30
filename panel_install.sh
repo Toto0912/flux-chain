@@ -8,23 +8,68 @@ export LC_ALL=C
 
 
 # 安装和更新仅使用 Toto0912/flux-chain 的匹配版本资源。
-RELEASE_VERSION="1.0.0"
+RELEASE_VERSION="1.0.1"
 RELEASE_URL="https://github.com/Toto0912/flux-chain/releases/download/v$RELEASE_VERSION"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 get_docker_compose_file() {
-  case "${PANEL_IPV6:-auto}" in
+  case "${PANEL_IPV6:-0}" in
     1) echo "$SCRIPT_DIR/docker-compose-v6.yml" ;;
-    0) echo "$SCRIPT_DIR/docker-compose-v4.yml" ;;
-    auto)
-      if check_ipv6_support > /dev/null 2>&1; then
-        echo "$SCRIPT_DIR/docker-compose-v6.yml"
-      else
-        echo "$SCRIPT_DIR/docker-compose-v4.yml"
-      fi ;;
+    # Legacy "auto" now has the safe default too; host IPv6 is not opt-in.
+    0|auto) echo "$SCRIPT_DIR/docker-compose-v4.yml" ;;
     *) echo "PANEL_IPV6 只能为 auto、0 或 1" >&2; return 1 ;;
   esac
+}
+
+read_interface_accept_ra() {
+  cat "/proc/sys/net/ipv6/conf/$1/accept_ra"
+}
+
+validate_ipv6_bridge_safety() {
+  local routes addresses interfaces iface value
+  command -v ip >/dev/null 2>&1 || {
+    echo "容器 IPv6 模式需要 iproute2 进行只读网络检查；未修改系统配置。" >&2
+    return 1
+  }
+  routes=$(ip -6 route show default) || return 1
+  addresses=$(ip -o -6 addr show scope global) || return 1
+  # Include dynamic addresses so an already-expired RA route is caught too.
+  interfaces=$({
+    printf '%s\n' "$routes" | awk '/proto ra([[:space:]]|$)/ { for(i=1;i<NF;i++) if($i=="dev") print $(i+1) }'
+    printf '%s\n' "$addresses" | awk '/dynamic|proto kernel_ra/ { name=$2; sub(/@.*/, "", name); print name }'
+  } | sort -u)
+  while IFS= read -r iface; do
+    [[ -n "$iface" ]] || continue
+    value=$(read_interface_accept_ra "$iface") || {
+      echo "无法读取网卡 $iface 的 IPv6 RA 设置，未启用容器 IPv6。" >&2
+      return 1
+    }
+    if [[ "$value" != 2 ]]; then
+      echo "拒绝启用容器 IPv6：网卡 $iface 依赖路由器通告，但 accept_ra=$value。Docker 开启 IPv6 转发后可能导致公网默认路由丢失。" >&2
+      echo "脚本不会修改宿主机网络参数。请使用默认 IPv4 容器内网，或由管理员自行确认 IPv6 网络配置后再显式启用。" >&2
+      return 1
+    fi
+  done <<< "$interfaces"
+}
+
+validate_panel_network() {
+  local compose_file wanted existing
+  compose_file=$(get_docker_compose_file) || return 1
+  wanted=false
+  if [[ "$compose_file" == "$SCRIPT_DIR/docker-compose-v6.yml" ]]; then wanted=true; fi
+  if existing=$(docker network inspect gost-network --format '{{.EnableIPv6}}' 2>/dev/null); then
+    case "$existing" in
+      true|false) ;;
+      *) echo "无法确认现有 gost-network 的网络模式，已停止，未重建服务。" >&2; return 1 ;;
+    esac
+    if [[ "$existing" != "$wanted" ]]; then
+      echo "现有 gost-network 的容器 IPv6=$existing，与本次选择 $wanted 不同，已停止，避免隐式重建网络。" >&2
+      echo "已有 IPv6 部署可用 sudo env PANEL_IPV6=1 bash panel_install.sh update 保留原模式；改用 IPv4 内网请按 README 规划迁移并保留 .env 和数据卷。" >&2
+      return 1
+    fi
+  fi
+  if [[ "$wanted" == true ]]; then validate_ipv6_bridge_safety || return 1; fi
 }
 
 download_file() {
@@ -148,29 +193,10 @@ check_docker() {
   echo "检测到 Docker 命令：$DOCKER_CMD"
 }
 
-# 检测系统是否支持 IPv6
-check_ipv6_support() {
-  echo "🔍 检测 IPv6 支持..."
-
-  # 检查是否有 IPv6 地址（排除 link-local 地址）
-  if ip -6 addr show 2>/dev/null | grep -v "scope link" | grep -q "inet6"; then
-    echo "✅ 检测到系统支持 IPv6"
-    return 0
-  elif ifconfig 2>/dev/null | grep -v "fe80:" | grep -q "inet6"; then
-    echo "✅ 检测到系统支持 IPv6"
-    return 0
-  else
-    echo "⚠️ 未检测到 IPv6 支持"
-    return 1
-  fi
-}
-
-
-
 # 显示菜单
 show_menu() {
   echo "==============================================="
-  echo "          FluxChain v1.0.0 面板管理脚本"
+  echo "          FluxChain v1.0.1 面板管理脚本"
   echo "==============================================="
   echo "请选择操作："
   echo "1. 安装面板"
@@ -782,6 +808,7 @@ install_panel() {
     echo "检测到已有配置或数据库卷，请保留原 .env 并选择更新，避免覆盖数据库凭据。" >&2
     return 1
   fi
+  validate_panel_network || return 1
   prepare_local_files || return 1
   get_config_params
   umask 077
@@ -817,6 +844,7 @@ update_panel() {
   check_docker
 
   [[ -s .env ]] || { echo "更新需要原部署目录的 .env；请勿重新生成数据库凭据。" >&2; return 1; }
+  validate_panel_network || return 1
   prepare_local_files
   # 先完成资源准备，再重建容器；下载或构建失败时现有服务保持运行。
   prepare_local_images
