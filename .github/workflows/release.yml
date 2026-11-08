@@ -165,7 +165,7 @@ jobs:
           set -euo pipefail
           version=$(cat VERSION)
           python3 scripts/check_release.py "$GITHUB_REF_NAME"
-          release_notes="FluxChain v$version 修复安装时的 IPv6 网络兼容问题：默认使用 IPv4 容器内网，不再自动启用容器 IPv6；保留 Docker 默认代理下的宿主机 IPv6 端口访问。显式 PANEL_IPV6=1 会进行只读 RA 安全检查，发现转发冲突时停止，不自动修改宿主机配置。已有网络模式不匹配时提前停止，避免隐式重建。旧版 IPv6 部署的保留与迁移说明见 https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/README.md 。"
+          release_notes="FluxChain v$version 优化转发链展示：当前路径及所有候选路径在服务器名称后显示对应的实际监听端口，便于维护与故障分析；入口流量按 1024 进位，自动使用 B、KB、MB、GB、TB 单位显示。安装与更新说明：https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/README.md 。"
           if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release create "$GITHUB_REF_NAME" --verify-tag --draft --title "FluxChain v$version" --notes "$release_notes"
           fi

@@ -11,11 +11,22 @@ import { createForwardChain, deleteForwardChain, getForwardChainList, getNodeLis
 
 type NodeItem = { id: number; name: string; serverIp: string; status: number; portSta: number; portEnd: number };
 type HopForm = { nodeIds: number[] };
+type PathHop = { nodeName: string; port?: number };
+type ChainPath = { name: string; hops: PathHop[]; available: boolean; latencyMs?: number | null; error?: string | null };
 type ChainItem = { id: number; name: string; inNodeId: number; inPort: number; targetHost: string; targetPort: number; protocol: string; hopsJson: string; pathsJson: string; probeIntervalMs: number; probeTimeoutMs: number; switchThresholdMs: number; selectedPathIndex: number; status: number; inFlow: number; outFlow: number };
 type ChainForm = { id?: number; name: string; inNodeId: number | null; inPort: string; targetHost: string; targetPort: string; protocol: string; probeIntervalSeconds: string; probeTimeoutSeconds: string; switchThresholdMs: string; hops: HopForm[] };
 const emptyForm = (): ChainForm => ({ name: "", inNodeId: null, inPort: "", targetHost: "", targetPort: "", protocol: "tls", probeIntervalSeconds: "300", probeTimeoutSeconds: "3", switchThresholdMs: "1000", hops: [{ nodeIds: [] }, { nodeIds: [] }] });
 const parseJson = <T,>(raw: string | undefined, fallback: T): T => { try { return raw ? JSON.parse(raw) as T : fallback; } catch { return fallback; } };
 const nodeLabel = (node: NodeItem) => `${node.name} · ${node.serverIp}${node.status === 1 ? "" : "（离线）"}`;
+const pathLabel = (path: ChainPath) => path.hops.map(hop => `${hop.nodeName}${hop.port != null ? `:${hop.port}` : ""}`).join(" → ");
+const formatFlow = (bytes: number): string => {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit++; }
+  return `${value.toFixed(2)} ${units[unit]}`;
+};
 const linkProtocols = [
   { key: "tls", label: "TLS（加密）" },
   { key: "quic", label: "QUIC（加密）" },
@@ -115,7 +126,7 @@ export default function ForwardChainPage() {
       <Button color="primary" className="w-full sm:w-auto sm:shrink-0" onPress={() => edit()}>创建转发链</Button>
     </div>
     {loading ? <div className="flex justify-center py-16"><Spinner label="正在读取转发链" /></div> : chains.length === 0 ? <Card><CardBody className="text-center py-12 text-default-500">还没有转发链，创建一条链路开始配置。</CardBody></Card> : <div className="grid gap-4">{chains.map(chain => {
-      const paths = parseJson<Array<any>>(chain.pathsJson, []);
+      const paths = parseJson<ChainPath[]>(chain.pathsJson, []);
       const selected = paths[chain.selectedPathIndex || 0];
       const candidateCount = paths.length;
       return <Card key={chain.id} className="min-w-0">
@@ -124,10 +135,10 @@ export default function ForwardChainPage() {
           <div className="grid grid-cols-3 gap-2 w-full sm:flex sm:w-auto sm:shrink-0"><Button size="sm" className="min-h-10 sm:min-h-8" variant="flat" onPress={() => edit(chain)}>编辑</Button><Button size="sm" className="min-h-10 sm:min-h-8" variant="flat" onPress={() => void toggle(chain)}>{chain.status === 1 ? "暂停" : "启用"}</Button><Button size="sm" className="min-h-10 sm:min-h-8" color="danger" variant="flat" onPress={() => void remove(chain)}>删除</Button></div>
         </CardHeader>
         <CardBody className="min-w-0 px-4 sm:px-5 pt-1 pb-5 space-y-3">
-          <div className="flex flex-wrap gap-x-5 gap-y-2 text-small"><span>业务：TCP + UDP</span><span>节点链路：{linkLabel(chain.protocol || "tls")}</span><span>探测间隔：{chain.probeIntervalMs / 1000}s</span><span>超时：{chain.probeTimeoutMs / 1000}s</span><span>切换阈值：{chain.switchThresholdMs}ms</span><span>入口流量：{(((chain.inFlow || 0) + (chain.outFlow || 0)) / 1024 / 1024).toFixed(2)} MB</span></div>
+          <div className="flex flex-wrap gap-x-5 gap-y-2 text-small"><span>业务：TCP + UDP</span><span>节点链路：{linkLabel(chain.protocol || "tls")}</span><span>探测间隔：{chain.probeIntervalMs / 1000}s</span><span>超时：{chain.probeTimeoutMs / 1000}s</span><span>切换阈值：{chain.switchThresholdMs}ms</span><span>入口流量：{formatFlow((chain.inFlow || 0) + (chain.outFlow || 0))}</span></div>
           {chain.protocol === "udp" && <p className="text-small text-default-500">{linkDescription("udp")}</p>}
-          <div className="break-all rounded-lg bg-default-100 p-3 text-small"><b>当前路径：</b>{selected ? selected.hops.map((h: any) => h.nodeName).join(" → ") : "第一条路径（等待探测）"}{selected?.latencyMs != null && <span className="ml-2 inline-block whitespace-nowrap text-primary">{Number(selected.latencyMs).toFixed(1)} ms</span>}</div>
-          <details className="min-w-0"><summary className="cursor-pointer py-1 text-small text-default-500">查看所有路径探测结果</summary><div className="mt-2 grid gap-2">{paths.map((path: any, index: number) => <div key={path.name} className="min-w-0 flex flex-col sm:flex-row sm:justify-between gap-1 sm:gap-2 rounded border border-default-200 px-3 py-2 text-small"><span className="min-w-0 break-all">{index === chain.selectedPathIndex ? "● 当前 · " : ""}{path.hops.map((h: any) => h.nodeName).join(" → ")}</span><span className="break-all">{path.available ? `${Number(path.latencyMs).toFixed(1)} ms` : (path.error || "等待探测/不可用")}</span></div>)}</div></details>
+          <div className="break-all rounded-lg bg-default-100 p-3 text-small"><b>当前路径：</b>{selected ? pathLabel(selected) : "第一条路径（等待探测）"}{selected?.latencyMs != null && <span className="ml-2 inline-block whitespace-nowrap text-primary">{Number(selected.latencyMs).toFixed(1)} ms</span>}</div>
+          <details className="min-w-0"><summary className="cursor-pointer py-1 text-small text-default-500">查看所有路径探测结果</summary><div className="mt-2 grid gap-2">{paths.map((path, index) => <div key={path.name} className="min-w-0 flex flex-col sm:flex-row sm:justify-between gap-1 sm:gap-2 rounded border border-default-200 px-3 py-2 text-small"><span className="min-w-0 break-all">{index === chain.selectedPathIndex ? "● 当前 · " : ""}{pathLabel(path)}</span><span className="break-all">{path.available ? `${Number(path.latencyMs).toFixed(1)} ms` : (path.error || "等待探测/不可用")}</span></div>)}</div></details>
         </CardBody>
       </Card>;
     })}</div>}

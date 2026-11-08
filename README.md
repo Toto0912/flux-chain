@@ -1,4 +1,4 @@
-# FluxChain v1.0.1
+# FluxChain v1.0.2
 
 ## 安装面板
 
@@ -23,7 +23,7 @@ curl -fL --retry 2 https://raw.githubusercontent.com/Toto0912/flux-chain/main/pa
 在线安装（替换面板后端地址和节点密钥）：
 
 ```bash
-curl -fL --retry 2 https://github.com/Toto0912/flux-chain/releases/download/v1.0.1/install.sh -o install.sh && sudo bash ./install.sh -a '面板地址:6365' -s '节点密钥'
+curl -fL --retry 2 https://github.com/Toto0912/flux-chain/releases/download/v1.0.2/install.sh -o install.sh && sudo bash ./install.sh -a '面板地址:6365' -s '节点密钥'
 ```
 
 中国大陆服务器下载较慢时，将同版本 `install.sh` 和 `gost-linux-amd64` 上传至节点同一目录，进入该目录执行；ARM64 改用 `gost-linux-arm64`：
@@ -36,7 +36,7 @@ sudo bash ./install.sh -b ./gost-linux-amd64 -a '面板地址:6365' -s '节点�
 
 ```bash
 # 在线更新：移开脚本同目录中的旧二进制文件
-curl -fL --retry 2 https://github.com/Toto0912/flux-chain/releases/download/v1.0.1/install.sh -o install.sh && sudo bash ./install.sh -u
+curl -fL --retry 2 https://github.com/Toto0912/flux-chain/releases/download/v1.0.2/install.sh -o install.sh && sudo bash ./install.sh -u
 # 离线更新：上传同版本脚本和新程序后执行
 sudo bash ./install.sh -u -b ./gost-linux-amd64
 ```
@@ -65,10 +65,10 @@ bash build_node.sh amd64 && bash build_node.sh arm64
 
 ## 离线部署
 
-从 [v1.0.1 Release](https://github.com/Toto0912/flux-chain/releases/tag/v1.0.1) 下载 `fluxchain-offline-amd64-v1.0.1.tar.gz` 和 `SHA256SUMS`，上传至服务器当前目录。预装 Docker 和 Compose 后执行：
+从 [v1.0.2 Release](https://github.com/Toto0912/flux-chain/releases/tag/v1.0.2) 下载 `fluxchain-offline-amd64-v1.0.2.tar.gz` 和 `SHA256SUMS`，上传至服务器当前目录。预装 Docker 和 Compose 后执行：
 
 ```bash
-awk '$2 == "fluxchain-offline-amd64-v1.0.1.tar.gz"' SHA256SUMS | sha256sum -c - && tar -xzf fluxchain-offline-amd64-v1.0.1.tar.gz && sudo env PANEL_IMAGE_MODE=load bash panel_install.sh install
+awk '$2 == "fluxchain-offline-amd64-v1.0.2.tar.gz"' SHA256SUMS | sha256sum -c - && tar -xzf fluxchain-offline-amd64-v1.0.2.tar.gz && sudo env PANEL_IMAGE_MODE=load bash panel_install.sh install
 ```
 
 离线包包含面板、MySQL 镜像及部署资源，不包含 Docker/Compose。已有部署请保留 `.env`，将 `install` 改为 `update`。
