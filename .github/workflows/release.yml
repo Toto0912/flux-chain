@@ -165,7 +165,7 @@ jobs:
           set -euo pipefail
           version=$(cat VERSION)
           python3 scripts/check_release.py "$GITHUB_REF_NAME"
-          release_notes="FluxChain v$version 优化转发链展示：当前路径及所有候选路径在服务器名称后显示对应的实际监听端口，便于维护与故障分析；入口流量按 1024 进位，自动使用 B、KB、MB、GB、TB 单位显示。安装与更新说明：https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/README.md 。"
+          release_notes="FluxChain v$version 修复转发回自身相同端口可能引发连接耗尽的问题。手动指定端口时拒绝自转发配置；留空自动分配时避开已占用端口及会形成自转发的目标端口，选择最小安全端口。支持回环、通配地址和已登记节点地址检查；编辑转发同样校验，拒绝危险修改时保留原配置。隧道按实际目标所在节点校验，保留跨节点相同端口的正常转发。安装与更新说明：https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/README.md 。"
           if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release create "$GITHUB_REF_NAME" --verify-tag --draft --title "FluxChain v$version" --notes "$release_notes"
           fi

@@ -7,6 +7,7 @@ import com.admin.common.dto.ForwardWithTunnelDto;
 import com.admin.common.dto.GostDto;
 import com.admin.common.lang.R;
 import com.admin.common.utils.GostUtil;
+import com.admin.common.utils.ForwardLoopGuard;
 import com.admin.common.utils.JwtUtil;
 import com.admin.common.utils.WebSocketServer;
 import com.admin.entity.*;
@@ -90,7 +91,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         }
 
         // 4. 分配端口
-        PortAllocation portAllocation = allocatePorts(tunnel, forwardDto.getInPort());
+        PortAllocation portAllocation = allocatePorts(tunnel, forwardDto.getInPort(), null, forwardDto.getRemoteAddr());
         if (portAllocation.isHasError()) {
             return R.err(portAllocation.getErrorMessage());
         }
@@ -895,17 +896,18 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
     /**
      * 分配端口
      */
-    private PortAllocation allocatePorts(Tunnel tunnel, Integer specifiedInPort) {
-        return allocatePorts(tunnel, specifiedInPort, null);
+    private PortAllocation allocatePorts(Tunnel tunnel, Integer specifiedInPort, Long excludeForwardId) {
+        return allocatePorts(tunnel, specifiedInPort, excludeForwardId, null);
     }
 
-    /**
-     * 分配端口
-     */
-    private PortAllocation allocatePorts(Tunnel tunnel, Integer specifiedInPort, Long excludeForwardId) {
+    private PortAllocation allocatePorts(Tunnel tunnel, Integer specifiedInPort, Long excludeForwardId, String remoteAddr) {
+        Set<Integer> forbiddenInPorts = selfForwardPorts(tunnel, tunnel.getInNodeId(), remoteAddr);
         Integer inPort;
 
         if (specifiedInPort != null) {
+            if (forbiddenInPorts.contains(specifiedInPort)) {
+                return PortAllocation.error("入口端口 " + specifiedInPort + " 与本机转发目标相同，会导致循环转发，请更换端口或目标地址");
+            }
             // 用户指定了入口端口，需要检查是否可用
             if (!isInPortAvailable(tunnel, specifiedInPort, excludeForwardId)) {
                 return PortAllocation.error("指定的入口端口 " + specifiedInPort + " 已被占用或不在允许范围内");
@@ -913,23 +915,31 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
             inPort = specifiedInPort;
         } else {
             // 用户未指定端口时自动分配
-            inPort = allocateInPort(tunnel, excludeForwardId);
+            inPort = allocatePortForNode(tunnel.getInNodeId(), excludeForwardId, forbiddenInPorts);
             if (inPort == null) {
-                return PortAllocation.error("隧道入口端口已满，无法分配新端口");
+                return PortAllocation.error("隧道入口没有可用端口（已被占用或会导致循环转发）");
             }
         }
 
         Integer outPort = null;
         if (tunnel.getType() == TUNNEL_TYPE_TUNNEL_FORWARD) {
-            outPort = Objects.equals(tunnel.getInNodeId(), tunnel.getOutNodeId())
-                    ? allocatePortForNode(tunnel.getOutNodeId(), excludeForwardId, Collections.singleton(inPort))
-                    : allocateOutPort(tunnel, excludeForwardId);
+            Set<Integer> reservedOutPorts = new HashSet<>(selfForwardPorts(tunnel, tunnel.getOutNodeId(), remoteAddr));
+            if (Objects.equals(tunnel.getInNodeId(), tunnel.getOutNodeId())) reservedOutPorts.add(inPort);
+            outPort = allocatePortForNode(tunnel.getOutNodeId(), excludeForwardId, reservedOutPorts);
             if (outPort == null) {
-                return PortAllocation.error("隧道出口端口已满，无法分配新端口");
+                return PortAllocation.error("隧道出口没有可用端口（已被占用或会导致循环转发）");
             }
         }
 
         return PortAllocation.success(inPort, outPort);
+    }
+
+    private Set<Integer> selfForwardPorts(Tunnel tunnel, Long listenerNodeId, String remoteAddr) {
+        Long destinationNodeId = tunnel.getType() == TUNNEL_TYPE_TUNNEL_FORWARD ? tunnel.getOutNodeId() : tunnel.getInNodeId();
+        Node listenerNode = nodeService.getNodeById(listenerNodeId);
+        return ForwardLoopGuard.forbiddenPorts(remoteAddr, listenerNode, destinationNodeId,
+                Objects.equals(listenerNodeId, tunnel.getInNodeId()) ? tunnel.getTcpListenAddr() : null,
+                Objects.equals(listenerNodeId, tunnel.getInNodeId()) ? tunnel.getUdpListenAddr() : null);
     }
 
     /**
@@ -969,7 +979,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
                 specifiedInPort = existForward.getInPort();
             }
 
-            PortAllocation portAllocation = allocatePorts(tunnel, specifiedInPort, forwardUpdateDto.getId());
+            PortAllocation portAllocation = allocatePorts(tunnel, specifiedInPort, forwardUpdateDto.getId(), forwardUpdateDto.getRemoteAddr());
             if (portAllocation.isHasError()) {
                 throw new RuntimeException(portAllocation.getErrorMessage());
             }
@@ -979,6 +989,13 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
             // 隧道和端口都未变化，保持原端口
             forward.setInPort(existForward.getInPort());
             forward.setOutPort(existForward.getOutPort());
+        }
+
+        // A target-only edit (including a blank port that retains the old port)
+        // must be checked before touching the running services or database.
+        if (selfForwardPorts(tunnel, tunnel.getInNodeId(), forward.getRemoteAddr()).contains(forward.getInPort())
+                || (forward.getOutPort() != null && selfForwardPorts(tunnel, tunnel.getOutNodeId(), forward.getRemoteAddr()).contains(forward.getOutPort()))) {
+            throw new RuntimeException("转发目标与本机监听端口相同，会导致循环转发，请更换端口或目标地址");
         }
 
         forward.setUpdatedTime(System.currentTimeMillis());
