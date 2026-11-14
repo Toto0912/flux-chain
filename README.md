@@ -7,7 +7,7 @@
 在当前目录执行，无需编译：
 
 ```bash
-curl -fL --retry 2 https://raw.githubusercontent.com/Toto0912/flux-chain/main/panel_install.sh -o panel_install.sh && sudo bash panel_install.sh install
+curl -fL --retry 2 https://raw.githubusercontent.com/Toto0912/flux-chain/main/panel_install.sh -o panel_install.sh && sudo bash panel_install.sh
 ```
 
 默认前端端口 `6366`、后端端口 `6365`，安装时可修改。初始账号密码均为 `admin_user`，登录后请修改。
