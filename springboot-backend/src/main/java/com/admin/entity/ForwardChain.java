@@ -14,6 +14,7 @@ public class ForwardChain extends BaseEntity {
     private String targetHost;
     private Integer targetPort;
     private String protocol;
+    private String probeMode;
     private String hopsJson;
     private String pathsJson;
     private String endpointPortsJson;

@@ -6,6 +6,8 @@ import java.util.List;
 
 @Data
 public class ForwardChainDto {
+    public static final int MIN_PROBE_INTERVAL_MS = 5000;
+
     private Long id;
     @NotBlank @Size(min = 2, max = 100)
     private String name;
@@ -18,9 +20,10 @@ public class ForwardChainDto {
     @NotNull @Min(1) @Max(65535)
     private Integer targetPort;
     private String protocol = "tls";
+    private String probeMode;
     @NotEmpty
     private List<Hop> hops;
-    @Min(10000) @Max(3600000)
+    @Min(MIN_PROBE_INTERVAL_MS) @Max(3600000)
     private Integer probeIntervalMs = 300000;
     @Min(1000) @Max(5000)
     private Integer probeTimeoutMs = 3000;

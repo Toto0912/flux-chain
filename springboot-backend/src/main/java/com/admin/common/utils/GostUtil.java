@@ -480,6 +480,29 @@ public class GostUtil {
                 new JSONArray(java.util.Collections.singletonList(plainUdpStageConfig(serviceName, port, host, targetPort))), "AddService");
     }
 
+    public static GostDto AddUdpStunStage(Long nodeId, String name, int port, String nextHop, String key) {
+        JSONObject metadata = new JSONObject();
+        metadata.put("fluxchainStunKey", key);
+        if (nextHop != null) metadata.put("nextHop", nextHop);
+        JSONObject handler = new JSONObject();
+        handler.put("type", "fluxchain-stun");
+        handler.put("metadata", metadata);
+
+        JSONObject listener = new JSONObject();
+        listener.put("type", "udp");
+        JSONObject listenerMetadata = new JSONObject();
+        listenerMetadata.put("readBufferSize", "128");
+        listener.put("metadata", listenerMetadata);
+
+        JSONObject service = new JSONObject();
+        service.put("name", name);
+        service.put("addr", ":" + port);
+        service.put("handler", handler);
+        service.put("listener", listener);
+        return WebSocketServer.send_msg(nodeId,
+                new JSONArray(java.util.Collections.singletonList(service)), "AddService");
+    }
+
     static JSONObject plainUdpStageConfig(String serviceName, Integer port, String host, Integer targetPort) {
         JSONObject service = new JSONObject();
         service.put("name", serviceName);
@@ -562,6 +585,32 @@ public class GostUtil {
         data.put("timeout", timeoutMs);
         data.put("chain", chainName);
         return WebSocketServer.send_msg(nodeId, data, "TcpPing");
+    }
+
+    public static GostDto UdpStunThroughChain(Long nodeId, String firstHop, String key, int timeoutMs) {
+        JSONObject data = new JSONObject();
+        data.put("address", firstHop);
+        data.put("fluxchainStunKey", key);
+        data.put("timeout", timeoutMs);
+        return WebSocketServer.send_msg(nodeId, data, "UdpStunProbe");
+    }
+
+    public static GostDto PrepareForwardUdpStun(Long nodeId, String serviceName) {
+        JSONObject data = new JSONObject();
+        data.put("service", serviceName + "_tls");
+        return WebSocketServer.send_msg(nodeId, data, "PrepareForwardUdpStun");
+    }
+
+    public static GostDto ProbeForwardUdpStun(Long nodeId, String serviceName, String token, String interfaceName, int timeoutMs) {
+        JSONObject data = new JSONObject();
+        data.put("timeout", timeoutMs);
+        if (serviceName != null) {
+            data.put("chain", serviceName + "_chains");
+            data.put("token", token);
+        } else if (StringUtils.isNotBlank(interfaceName)) {
+            data.put("interface", interfaceName);
+        }
+        return WebSocketServer.send_msg(nodeId, data, "ForwardUdpStun");
     }
 
     public static GostDto DeleteRouteChain(Long nodeId, String name) {

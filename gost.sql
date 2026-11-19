@@ -318,6 +318,7 @@ CREATE TABLE IF NOT EXISTS `forward_chain` (
   `hops_json` longtext NOT NULL,
   `paths_json` longtext NOT NULL,
   `endpoint_ports_json` longtext NOT NULL,
+  `probe_mode` varchar(12) NOT NULL DEFAULT 'tcp',
   `probe_interval_ms` int NOT NULL DEFAULT 300000,
   `probe_timeout_ms` int NOT NULL DEFAULT 3000,
   `switch_threshold_ms` int NOT NULL DEFAULT 1000,

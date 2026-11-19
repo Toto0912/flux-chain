@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Card, CardBody, CardHeader } from "@heroui/card";
 import { Button } from "@heroui/button";
 import { Input } from "@heroui/input";
@@ -42,6 +42,7 @@ import {
   pauseForwardService,
   resumeForwardService,
   diagnoseForward,
+  type ForwardProbeMode,
   updateForwardOrder
 } from "@/api";
 import { JwtUtil } from "@/utils/jwt";
@@ -92,6 +93,8 @@ interface AddressItem {
 
 interface DiagnosisResult {
   forwardName: string;
+  tunnelType?: string;
+  probeMode?: ForwardProbeMode;
   timestamp: number;
   results: Array<{
     success: boolean;
@@ -103,6 +106,7 @@ interface DiagnosisResult {
     message?: string;
     averageTime?: number;
     packetLoss?: number;
+    latencyMs?: number;
   }>;
 }
 
@@ -160,6 +164,8 @@ export default function ForwardPage() {
   const [submitLoading, setSubmitLoading] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [diagnosisLoading, setDiagnosisLoading] = useState(false);
+  const [diagnosisMode, setDiagnosisMode] = useState<ForwardProbeMode>("tcp");
+  const latestDiagnosis = useRef(0);
   const [forwardToDelete, setForwardToDelete] = useState<Forward | null>(null);
   const [currentDiagnosisForward, setCurrentDiagnosisForward] = useState<Forward | null>(null);
   const [diagnosisResult, setDiagnosisResult] = useState<DiagnosisResult | null>(null);
@@ -626,20 +632,24 @@ export default function ForwardPage() {
   };
 
   // 诊断转发
-  const handleDiagnose = async (forward: Forward) => {
+  const handleDiagnose = async (forward: Forward, probeMode: ForwardProbeMode = "tcp") => {
+    const request = ++latestDiagnosis.current;
     setCurrentDiagnosisForward(forward);
+    setDiagnosisMode(probeMode);
     setDiagnosisModalOpen(true);
     setDiagnosisLoading(true);
     setDiagnosisResult(null);
 
     try {
-      const response = await diagnoseForward(forward.id);
+      const response = await diagnoseForward(forward.id, probeMode);
+      if (request !== latestDiagnosis.current) return;
       if (response.code === 0) {
         setDiagnosisResult(response.data);
       } else {
         toast.error(response.msg || '诊断失败');
         setDiagnosisResult({
           forwardName: forward.name,
+          probeMode,
           timestamp: Date.now(),
           results: [{
             success: false,
@@ -652,10 +662,12 @@ export default function ForwardPage() {
         });
       }
     } catch (error) {
+      if (request !== latestDiagnosis.current) return;
       console.error('诊断失败:', error);
       toast.error('网络错误，请重试');
       setDiagnosisResult({
         forwardName: forward.name,
+        probeMode,
         timestamp: Date.now(),
         results: [{
           success: false,
@@ -667,7 +679,7 @@ export default function ForwardPage() {
         }]
       });
     } finally {
-      setDiagnosisLoading(false);
+      if (request === latestDiagnosis.current) setDiagnosisLoading(false);
     }
   };
 
@@ -2037,12 +2049,36 @@ export default function ForwardPage() {
                         size="sm"
                         className="flex-shrink-0"
                       >
-                        转发服务
+                        {diagnosisResult?.tunnelType ?? "转发服务"}
                       </Chip>
                     </div>
                   )}
                 </ModalHeader>
                 <ModalBody>
+                  {currentDiagnosisForward && (
+                    <div className="flex flex-wrap gap-2" role="group" aria-label="探测方式">
+                      <Button
+                        size="sm"
+                        variant={diagnosisMode === "tcp" ? "solid" : "flat"}
+                        color={diagnosisMode === "tcp" ? "primary" : "default"}
+                        aria-pressed={diagnosisMode === "tcp"}
+                        isDisabled={diagnosisLoading || diagnosisMode === "tcp"}
+                        onPress={() => handleDiagnose(currentDiagnosisForward, "tcp")}
+                      >
+                        TCP 建连
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant={diagnosisMode === "udp_stun" ? "solid" : "flat"}
+                        color={diagnosisMode === "udp_stun" ? "primary" : "default"}
+                        aria-pressed={diagnosisMode === "udp_stun"}
+                        isDisabled={diagnosisLoading || diagnosisMode === "udp_stun"}
+                        onPress={() => handleDiagnose(currentDiagnosisForward, "udp_stun")}
+                      >
+                        UDP STUN 到 Google
+                      </Button>
+                    </div>
+                  )}
                   {diagnosisLoading ? (
                     <div className="flex items-center justify-center py-16">
                       <div className="flex items-center gap-3">
@@ -2053,7 +2089,14 @@ export default function ForwardPage() {
                   ) : diagnosisResult ? (
                     <div className="space-y-4">
                       {diagnosisResult.results.map((result, index) => {
-                        const quality = getQualityDisplay(result.averageTime, result.packetLoss);
+                        const udpStun = diagnosisResult.probeMode === "udp_stun";
+                        const quality = udpStun ? null : getQualityDisplay(result.averageTime, result.packetLoss);
+                        const host = result.targetIp ?? "-";
+                        const address = result.targetPort == null ? host :
+                          `${host.includes(":") ? `[${host}]` : host}:${result.targetPort}`;
+                        const status = udpStun
+                          ? (result.success ? "收到回包" : "探测失败")
+                          : (result.success ? "连接成功" : "连接失败");
                         
                         return (
                           <Card key={index} className={`shadow-sm border ${result.success ? 'border-success' : 'border-danger'}`}>
@@ -2068,7 +2111,7 @@ export default function ForwardPage() {
                                       variant="flat" 
                                       size="sm"
                                     >
-                                      {result.success ? '连接成功' : '连接失败'}
+                                      {status}
                                     </Chip>
                                   </div>
                                 </div>
@@ -2076,8 +2119,13 @@ export default function ForwardPage() {
                             </CardHeader>
                             
                             <CardBody className="pt-0">
-                              {result.success ? (
-                                <div className="space-y-3">
+                              <div className="space-y-3">
+                                {result.success && (udpStun ? (
+                                  <div className="flex items-baseline gap-2">
+                                    <span className="text-2xl font-bold text-primary">{result.latencyMs?.toFixed(1)}</span>
+                                    <span className="text-small text-default-500">ms RTT</span>
+                                  </div>
+                                ) : (
                                   <div className="grid grid-cols-3 gap-4">
                                     <div className="text-center">
                                       <div className="text-2xl font-bold text-primary">{result.averageTime?.toFixed(0)}</div>
@@ -2098,29 +2146,20 @@ export default function ForwardPage() {
                                       )}
                                     </div>
                                   </div>
-                                  <div className="text-small text-default-500 flex items-center gap-1">
-                                    <span className="flex-shrink-0">目标地址:</span>
-                                    <code className="font-mono truncate min-w-0" title={`${result.targetIp}${result.targetPort ? ':' + result.targetPort : ''}`}>
-                                      {result.targetIp}{result.targetPort ? ':' + result.targetPort : ''}
-                                    </code>
-                                  </div>
+                                ))}
+                                <div className="text-small text-default-500 flex items-center gap-1">
+                                  <span className="flex-shrink-0">{udpStun ? "探测地址" : "目标地址"}</span>
+                                  <code className="font-mono truncate min-w-0" title={address}>{address}</code>
                                 </div>
-                              ) : (
-                                <div className="space-y-2">
-                                  <div className="text-small text-default-500 flex items-center gap-1">
-                                    <span className="flex-shrink-0">目标地址:</span>
-                                    <code className="font-mono truncate min-w-0" title={`${result.targetIp}${result.targetPort ? ':' + result.targetPort : ''}`}>
-                                      {result.targetIp}{result.targetPort ? ':' + result.targetPort : ''}
-                                    </code>
-                                  </div>
+                                {!result.success && (
                                   <Alert
                                     color="danger"
                                     variant="flat"
                                     title="错误详情"
                                     description={result.message}
                                   />
-                                </div>
-                              )}
+                                )}
+                              </div>
                             </CardBody>
                           </Card>
                         );
@@ -2144,7 +2183,7 @@ export default function ForwardPage() {
                   {currentDiagnosisForward && (
                     <Button 
                       color="primary" 
-                      onPress={() => handleDiagnose(currentDiagnosisForward)}
+                      onPress={() => handleDiagnose(currentDiagnosisForward, diagnosisMode)}
                       isLoading={diagnosisLoading}
                     >
                       重新诊断
@@ -2158,4 +2197,4 @@ export default function ForwardPage() {
       </div>
     
   );
-} 
+}

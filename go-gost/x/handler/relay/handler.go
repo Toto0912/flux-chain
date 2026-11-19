@@ -18,6 +18,7 @@ import (
 	"github.com/go-gost/relay"
 	ctxvalue "github.com/go-gost/x/ctx"
 	stats_util "github.com/go-gost/x/internal/util/stats"
+	"github.com/go-gost/x/internal/util/stunprobe"
 	tls_util "github.com/go-gost/x/internal/util/tls"
 	rate_limiter "github.com/go-gost/x/limiter/rate"
 	cache_limiter "github.com/go-gost/x/limiter/traffic/cache"
@@ -216,6 +217,27 @@ func (h *relayHandler) Handle(ctx context.Context, conn net.Conn, opts ...handle
 		network = "udp"
 	}
 	ro.Network = network
+	if req.Cmd&relay.CmdMask == stunprobe.TunnelProbeCommand {
+		token, port, _ := net.SplitHostPort(address)
+		if h.hop == nil || network != "udp" || port != "0" || !stunprobe.AcceptTunnelProbe(h.options.Service, token) {
+			resp.Status = relay.StatusUnauthorized
+			_, _ = resp.WriteTo(conn)
+			return ErrUnauthorized
+		}
+		ctx, cancel := context.WithTimeout(ctx, stunprobe.MaxTimeout)
+		defer cancel()
+		deadline, _ := ctx.Deadline()
+		if err := conn.SetDeadline(deadline); err != nil {
+			return err
+		}
+		resp.Features = []relay.Feature{&relay.AddrFeature{AType: relay.AddrDomain, Host: stunprobe.TunnelProbeAck}}
+		if _, err := resp.WriteTo(conn); err != nil {
+			return err
+		}
+		return stunprobe.RespondTunnel(ctx, &udpConn{Conn: conn}, func(ctx context.Context, address string) (net.Conn, error) {
+			return h.options.Router.Dial(ctx, "udp", address)
+		})
+	}
 	ro.Host = address
 
 	if h.hop != nil {

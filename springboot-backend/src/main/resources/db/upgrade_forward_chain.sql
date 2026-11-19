@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS `forward_chain` (
   `hops_json` longtext NOT NULL,
   `paths_json` longtext NOT NULL,
   `endpoint_ports_json` longtext NOT NULL,
+  `probe_mode` varchar(12) NOT NULL DEFAULT 'tcp',
   `probe_interval_ms` int NOT NULL DEFAULT 300000,
   `probe_timeout_ms` int NOT NULL DEFAULT 3000,
   `switch_threshold_ms` int NOT NULL DEFAULT 1000,
@@ -25,6 +26,17 @@ CREATE TABLE IF NOT EXISTS `forward_chain` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_forward_chain_entry_port` (`in_node_id`, `in_port`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 同时兼容已有转发链的数据库及 MySQL 5.7。
+SET @chain_probe_migration = IF(
+  EXISTS (SELECT 1 FROM information_schema.COLUMNS
+          WHERE table_schema = DATABASE() AND table_name = 'forward_chain' AND column_name = 'probe_mode'),
+  'SELECT 1',
+  'ALTER TABLE `forward_chain` ADD COLUMN `probe_mode` varchar(12) NOT NULL DEFAULT ''tcp'''
+);
+PREPARE chain_probe_stmt FROM @chain_probe_migration;
+EXECUTE chain_probe_stmt;
+DEALLOCATE PREPARE chain_probe_stmt;
 
 -- FluxChain：仅替换旧项目默认名称，保留自定义的网站名称。
 UPDATE `vite_config` SET `value` = 'FluxChain'

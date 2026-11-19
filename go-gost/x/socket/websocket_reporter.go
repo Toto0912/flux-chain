@@ -15,6 +15,7 @@ import (
 
 	"github.com/go-gost/x/config"
 	"github.com/go-gost/x/internal/util/crypto"
+	"github.com/go-gost/x/internal/util/stunprobe"
 	"github.com/go-gost/x/registry"
 	"github.com/go-gost/x/service"
 	"github.com/gorilla/websocket"
@@ -218,7 +219,7 @@ func (w *WebSocketReporter) connect() error {
 
 	// 使用最新的配置重新构建 URL
 	currentURL := "ws://" + w.addr + "/system-info?type=1&secret=" + w.secret + "&version=" + w.version +
-		"&http=" + strconv.Itoa(cfg.Http) + "&tls=" + strconv.Itoa(cfg.Tls) + "&socks=" + strconv.Itoa(cfg.Socks)
+		"&http=" + strconv.Itoa(cfg.Http) + "&tls=" + strconv.Itoa(cfg.Tls) + "&socks=" + strconv.Itoa(cfg.Socks) + "&udpStunProbe=1&forwardUdpStun=1"
 
 	u, err := url.Parse(currentURL)
 	if err != nil {
@@ -493,28 +494,41 @@ func (w *WebSocketReporter) handleReceivedMessage(messageType int, message []byt
 // Keep configuration commands on the ordered reader, but run slow diagnostics
 // separately with bounded admission so pause/update/delete remain responsive.
 func (w *WebSocketReporter) dispatchCommand(cmd CommandMessage) {
-	if cmd.Type != "TcpPing" {
+	if !isProbeCommand(cmd.Type) {
 		w.routeCommand(cmd)
 		return
 	}
 	if !w.probeDispatcher.trySubmit(func() { w.routeCommand(cmd) }) {
 		w.sendResponse(CommandResponse{
-			Type: "TcpPingResponse", RequestId: cmd.RequestId,
+			Type: cmd.Type + "Response", RequestId: cmd.RequestId,
 			Success: false, Message: "节点探测并发已满，请稍后重试",
 			Data: TcpPingResponse{Success: false, ErrorMessage: "节点探测并发已满，请稍后重试"},
 		})
 	}
 }
 
+func isProbeCommand(command string) bool {
+	switch command {
+	case "TcpPing", "UdpStunProbe", "PrepareForwardUdpStun", "ForwardUdpStun":
+		return true
+	default:
+		return false
+	}
+}
+
 // routeCommand 路由命令到对应的处理函数
 func (w *WebSocketReporter) routeCommand(cmd CommandMessage) {
-	if cmd.Type != "TcpPing" {
+	if !isProbeCommand(cmd.Type) {
 		jsonBytes, errs := json.Marshal(cmd)
 		if errs != nil {
 			fmt.Println("Error marshaling JSON:", errs)
 			return
 		}
-		fmt.Println("🔔 收到命令: ", string(jsonBytes))
+		if bytes.Contains(jsonBytes, []byte(`"fluxchainStunKey"`)) {
+			fmt.Println("🔔 收到命令: ", cmd.Type)
+		} else {
+			fmt.Println("🔔 收到命令: ", string(jsonBytes))
+		}
 	}
 	var err error
 	var response CommandResponse
@@ -574,6 +588,15 @@ func (w *WebSocketReporter) routeCommand(cmd CommandMessage) {
 		tcpPingResult, err = w.handleTcpPing(cmd.Data)
 		response.Type = "TcpPingResponse"
 		response.Data = tcpPingResult
+	case "UdpStunProbe":
+		response.Type = "UdpStunProbeResponse"
+		response.Data, err = w.handleUdpStunProbe(cmd.Data)
+	case "PrepareForwardUdpStun":
+		response.Type = "PrepareForwardUdpStunResponse"
+		response.Data, err = prepareForwardUdpStun(cmd.Data)
+	case "ForwardUdpStun":
+		response.Type = "ForwardUdpStunResponse"
+		response.Data, err = w.handleForwardUdpStun(cmd.Data)
 
 	// Protocol blocking switches
 	case "SetProtocol":
@@ -594,7 +617,7 @@ func (w *WebSocketReporter) routeCommand(cmd CommandMessage) {
 		response.Message = "OK"
 	}
 	// Probes are read-only and may run concurrently; do not rewrite gost.json.
-	if cmd.Type != "TcpPing" {
+	if !isProbeCommand(cmd.Type) {
 		saveConfig()
 	}
 
@@ -1096,7 +1119,7 @@ func getMemoryInfo() MemoryInfo {
 func StartWebSocketReporterWithConfig(addr string, secret string, http int, tls int, socks int, version string) *WebSocketReporter {
 
 	// 构建初始 WebSocket URL
-	fullURL := "ws://" + addr + "/system-info?type=1&secret=" + secret + "&version=" + version + "&http=" + strconv.Itoa(http) + "&tls=" + strconv.Itoa(tls) + "&socks=" + strconv.Itoa(socks)
+	fullURL := "ws://" + addr + "/system-info?type=1&secret=" + secret + "&version=" + version + "&http=" + strconv.Itoa(http) + "&tls=" + strconv.Itoa(tls) + "&socks=" + strconv.Itoa(socks) + "&udpStunProbe=1&forwardUdpStun=1"
 
 	fmt.Printf("🔗 WebSocket连接URL: %s\n", fullURL)
 
@@ -1107,6 +1130,43 @@ func StartWebSocketReporterWithConfig(addr string, secret string, http int, tls 
 	reporter.version = version
 	reporter.Start()
 	return reporter
+}
+
+func (w *WebSocketReporter) handleUdpStunProbe(data interface{}) (interface{}, error) {
+	var request struct {
+		Address string `json:"address"`
+		Key     string `json:"fluxchainStunKey"`
+		Timeout int    `json:"timeout"`
+	}
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(jsonData, &request); err != nil {
+		return nil, fmt.Errorf("UDP STUN 探测请求无效")
+	}
+	host, portText, err := net.SplitHostPort(request.Address)
+	port, portErr := strconv.Atoi(portText)
+	if err != nil || host == "" || portErr != nil || port < 1 || port > 65535 {
+		return nil, fmt.Errorf("UDP STUN 探测中继地址无效")
+	}
+	if request.Timeout < 1000 || request.Timeout > 5000 {
+		return nil, fmt.Errorf("UDP STUN 探测超时必须在 1 至 5 秒之间")
+	}
+	key, err := stunprobe.ParseKey(request.Key)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(w.ctx, time.Duration(request.Timeout)*time.Millisecond)
+	defer cancel()
+	elapsed, err := stunprobe.Probe(ctx, request.Address, key)
+	if err != nil {
+		if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
+			return nil, fmt.Errorf("未收到 Google STUN 应答（探测超时）")
+		}
+		return nil, fmt.Errorf("UDP STUN 探测失败：%w", err)
+	}
+	return map[string]interface{}{"success": true, "latencyMs": float64(elapsed) / float64(time.Millisecond)}, nil
 }
 
 // handleTcpPing 处理TCP ping诊断命令

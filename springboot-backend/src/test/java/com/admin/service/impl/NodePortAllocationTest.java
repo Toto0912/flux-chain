@@ -58,9 +58,9 @@ class NodePortAllocationTest {
     @Test
     void ordinaryAllocationIncludesBothEndpointFormatsAndUnexpiredRetiredPorts() {
         long future = System.currentTimeMillis() + 60000;
-        String config = "{\"format\":2,\"endpoints\":[{\"nodeId\":1,\"port\":28101}],\"retiredPorts\":{\"1\":[{\"port\":28102,\"expiresAt\":" + future + "},{\"port\":28103,\"expiresAt\":1}]}}";
+        String config = "{\"format\":2,\"endpoints\":[{\"nodeId\":1,\"port\":28101,\"stunPort\":28103}],\"retiredPorts\":{\"1\":[{\"port\":28102,\"expiresAt\":" + future + "},{\"port\":28104,\"expiresAt\":1}]}}";
         when(chainMapper.selectList(any())).thenReturn(List.of(chain(7, 9, 28900, "{\"1\":28100}"), chain(8, 9, 28901, config)));
-        assertEquals(28103, allocateForward(1L, null));
+        assertEquals(28104, allocateForward(1L, null));
     }
 
     @Test

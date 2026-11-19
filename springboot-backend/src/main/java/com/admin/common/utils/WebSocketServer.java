@@ -80,13 +80,15 @@ public class WebSocketServer extends TextWebSocketHandler {
                     // 先发送确认消息
                     sendToUser(session, "{\"type\":\"call\"}", nodeSecret);
                 }else if (decryptedPayload.contains("requestId")) {
-                    log.debug("收到消息: {}", decryptedPayload);
                     // 处理命令响应消息
                     try {
                         JSONObject responseJson = JSONObject.parseObject(decryptedPayload);
                         String requestId = responseJson.getString("requestId");
                         String responseMessage = responseJson.getString("message");
                         String responseType = responseJson.getString("type");
+                        if (!"PrepareForwardUdpStunResponse".equals(responseType)) {
+                            log.debug("收到消息: {}", decryptedPayload);
+                        }
                         JSONObject responseData = responseJson.getJSONObject("data");
                         
                         if (requestId != null) {
@@ -435,6 +437,19 @@ public class WebSocketServer extends TextWebSocketHandler {
     }
 
 
+
+    public static boolean supportsUdpStunProbe(Long nodeId) {
+        return supportsProbe(nodeId, "udpStunProbe");
+    }
+
+    public static boolean supportsForwardUdpStun(Long nodeId) {
+        return supportsProbe(nodeId, "forwardUdpStun");
+    }
+
+    private static boolean supportsProbe(Long nodeId, String capability) {
+        WebSocketSession session = nodeSessions.get(nodeId);
+        return session != null && session.isOpen() && Boolean.TRUE.equals(session.getAttributes().get(capability));
+    }
 
     public static GostDto send_msg(Long node_id, Object msg, String type) {
         WebSocketSession nodeSession = nodeSessions.get(node_id);

@@ -51,6 +51,7 @@ public class NodePortUsageService {
             if (endpoints != null) for (int i = 0; i < endpoints.size(); i++) {
                 JSONObject endpoint = endpoints.getJSONObject(i);
                 reserve(ports, endpoint.getLong("nodeId"), endpoint.getInteger("port"));
+                reserve(ports, endpoint.getLong("nodeId"), endpoint.getInteger("stunPort"));
             }
         } else {
             for (String nodeKey : config.keySet()) {

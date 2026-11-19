@@ -12,6 +12,7 @@ import (
 	"github.com/go-gost/relay"
 	ctxvalue "github.com/go-gost/x/ctx"
 	relay_util "github.com/go-gost/x/internal/util/relay"
+	"github.com/go-gost/x/internal/util/stunprobe"
 	"github.com/go-gost/x/registry"
 )
 
@@ -95,6 +96,15 @@ func (c *relayConnector) Connect(ctx context.Context, conn net.Conn, network, ad
 		})
 	}
 
+	if token := stunprobe.TunnelProbeToken(ctx); token != "" && network == "udp" {
+		req.Cmd = stunprobe.TunnelProbeCommand | relay.FUDP
+		req.Features = append(req.Features, &relay.AddrFeature{AType: relay.AddrDomain, Host: token})
+		if err := openTunnelProbe(ctx, conn, &req); err != nil {
+			return nil, err
+		}
+		return &udpConn{Conn: conn}, nil
+	}
+
 	if address != "" {
 		af := &relay.AddrFeature{}
 		if err := af.ParseFrom(address); err != nil {
@@ -143,4 +153,29 @@ func (c *relayConnector) Connect(ctx context.Context, conn net.Conn, network, ad
 	}
 
 	return conn, nil
+}
+
+func openTunnelProbe(ctx context.Context, conn net.Conn, req *relay.Request) error {
+	deadline, _ := ctx.Deadline()
+	if err := conn.SetDeadline(deadline); err != nil {
+		return err
+	}
+	if _, err := req.WriteTo(conn); err != nil {
+		return err
+	}
+	resp := relay.Response{}
+	if _, err := resp.ReadFrom(conn); err != nil {
+		return err
+	}
+	if resp.Version != relay.Version1 || resp.Status != relay.StatusOK {
+		return fmt.Errorf("出口节点拒绝 UDP 探测（Relay %d）", resp.Status)
+	}
+	for _, feature := range resp.Features {
+		if ack, ok := feature.(*relay.AddrFeature); ok && ack.Host == stunprobe.TunnelProbeAck {
+			return nil
+		}
+	}
+	// A legacy forwarder may return OK. Wait for the probe-specific handshake
+	// before sending a packet so that the business target never receives it.
+	return fmt.Errorf("出口节点未确认 UDP 探测，请检查节点版本和隧道配置")
 }

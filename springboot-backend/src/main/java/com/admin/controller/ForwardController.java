@@ -11,6 +11,7 @@ import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * <p>
@@ -83,7 +84,7 @@ public class ForwardController extends BaseController {
     @PostMapping("/diagnose")
     public R diagnoseForward(@RequestBody Map<String, Object> params) {
         Long forwardId = Long.valueOf(params.get("forwardId").toString());
-        return forwardService.diagnoseForward(forwardId);
+        return forwardService.diagnoseForward(forwardId, Objects.toString(params.get("probeMode"), null));
     }
 
     /**

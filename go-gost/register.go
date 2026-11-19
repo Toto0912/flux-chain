@@ -62,6 +62,7 @@ import (
 	_ "github.com/go-gost/x/handler/relay"
 	_ "github.com/go-gost/x/handler/router"
 	_ "github.com/go-gost/x/handler/serial"
+	_ "github.com/go-gost/x/handler/stunprobe"
 	_ "github.com/go-gost/x/handler/sni"
 	_ "github.com/go-gost/x/handler/socks/v4"
 	_ "github.com/go-gost/x/handler/socks/v5"
