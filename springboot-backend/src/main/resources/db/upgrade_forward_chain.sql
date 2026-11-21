@@ -60,6 +60,17 @@ PREPARE chain_order_stmt FROM @chain_order_migration;
 EXECUTE chain_order_stmt;
 DEALLOCATE PREPARE chain_order_stmt;
 
+-- 旧转发沿用 TCP 建连诊断。
+SET @forward_probe_migration = IF(
+  EXISTS (SELECT 1 FROM information_schema.COLUMNS
+          WHERE table_schema = DATABASE() AND table_name = 'forward' AND column_name = 'probe_mode'),
+  'SELECT 1',
+  'ALTER TABLE `forward` ADD COLUMN `probe_mode` varchar(12) NOT NULL DEFAULT ''tcp'''
+);
+PREPARE forward_probe_stmt FROM @forward_probe_migration;
+EXECUTE forward_probe_stmt;
+DEALLOCATE PREPARE forward_probe_stmt;
+
 -- FluxChain：仅替换旧项目默认名称，保留自定义的网站名称。
 UPDATE `vite_config` SET `value` = 'FluxChain'
 WHERE `name` = 'app_name' AND BINARY `value` IN ('flux', 'flux-panel');

@@ -16,7 +16,8 @@ import (
 
 func prepareForwardUdpStun(data interface{}) (interface{}, error) {
 	var request struct {
-		Service string `json:"service"`
+		Service  string `json:"service"`
+		LinkOnly bool   `json:"linkOnly"`
 	}
 	payload, err := json.Marshal(data)
 	if err != nil {
@@ -28,7 +29,7 @@ func prepareForwardUdpStun(data interface{}) (interface{}, error) {
 	if request.Service == "" || registry.ServiceRegistry().Get(request.Service) == nil {
 		return nil, errors.New("出口节点未运行该转发的隧道服务")
 	}
-	token, err := stunprobe.PrepareTunnelProbe(request.Service)
+	token, err := stunprobe.PrepareTunnelProbe(request.Service, request.LinkOnly)
 	if err != nil {
 		return nil, err
 	}
@@ -41,6 +42,7 @@ func (w *WebSocketReporter) handleForwardUdpStun(data interface{}) (interface{},
 		Token     string `json:"token"`
 		Interface string `json:"interface"`
 		Timeout   int    `json:"timeout"`
+		LinkOnly  bool   `json:"linkOnly"`
 	}
 	payload, err := json.Marshal(data)
 	if err != nil {
@@ -85,14 +87,14 @@ func (w *WebSocketReporter) handleForwardUdpStun(data interface{}) (interface{},
 		return nil, fmt.Errorf("隧道 UDP 探测连接失败：%w", err)
 	}
 	defer conn.Close()
-	timings, err := stunprobe.MeasureTunnel(ctx, conn)
+	timings, err := stunprobe.MeasureTunnel(ctx, conn, request.LinkOnly)
 	if timings.LinkRTT == nil {
 		return nil, fmt.Errorf("未收到出口节点的 UDP 回显：%w", err)
 	}
 	result := map[string]interface{}{"linkLatencyMs": durationMilliseconds(*timings.LinkRTT)}
 	if err != nil {
 		result["errorMessage"] = "出口未返回有效的 Google STUN 回包"
-	} else {
+	} else if timings.STUNRTT != nil {
 		result["latencyMs"] = durationMilliseconds(*timings.STUNRTT)
 	}
 	return result, nil

@@ -60,6 +60,7 @@ interface Forward {
   status: number;
   inFlow: number;
   outFlow: number;
+  probeMode?: ForwardProbeMode;
   serviceRunning: boolean;
   createdTime: string;
   userName?: string;
@@ -83,7 +84,13 @@ interface ForwardForm {
   remoteAddr: string;
   interfaceName?: string;
   strategy: string;
+  probeMode?: ForwardProbeMode;
 }
+
+const PROBE_MODE_LABELS: Record<ForwardProbeMode, string> = {
+  tcp: "TCP建连延迟",
+  udp_stun: "UDP STUN到Google延迟",
+};
 
 interface AddressItem {
   id: number;
@@ -164,7 +171,6 @@ export default function ForwardPage() {
   const [submitLoading, setSubmitLoading] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [diagnosisLoading, setDiagnosisLoading] = useState(false);
-  const [diagnosisMode, setDiagnosisMode] = useState<ForwardProbeMode>("tcp");
   const latestDiagnosis = useRef(0);
   const [forwardToDelete, setForwardToDelete] = useState<Forward | null>(null);
   const [currentDiagnosisForward, setCurrentDiagnosisForward] = useState<Forward | null>(null);
@@ -468,7 +474,8 @@ export default function ForwardPage() {
       inPort: forward.inPort,
       remoteAddr: forward.remoteAddr.split(',').join('\n'),
       interfaceName: forward.interfaceName || '',
-      strategy: forward.strategy || 'fifo'
+      strategy: forward.strategy || 'fifo',
+      probeMode: forward.probeMode ?? "tcp"
     });
     const tunnel = tunnels.find(t => t.id === forward.tunnelId);
     setSelectedTunnel(tunnel || null);
@@ -547,7 +554,8 @@ export default function ForwardPage() {
           inPort: form.inPort,
           remoteAddr: processedRemoteAddr,
           interfaceName: form.interfaceName,
-          strategy: addressCount > 1 ? form.strategy : 'fifo'
+          strategy: addressCount > 1 ? form.strategy : 'fifo',
+          probeMode: form.probeMode ?? "tcp"
         };
         res = await updateForward(updateData);
       } else {
@@ -558,7 +566,8 @@ export default function ForwardPage() {
           inPort: form.inPort,
           remoteAddr: processedRemoteAddr,
           interfaceName: form.interfaceName,
-          strategy: addressCount > 1 ? form.strategy : 'fifo'
+          strategy: addressCount > 1 ? form.strategy : 'fifo',
+          probeMode: form.probeMode
         };
         res = await createForward(createData);
       }
@@ -632,16 +641,16 @@ export default function ForwardPage() {
   };
 
   // 诊断转发
-  const handleDiagnose = async (forward: Forward, probeMode: ForwardProbeMode = "tcp") => {
+  const handleDiagnose = async (forward: Forward) => {
+    const probeMode = forward.probeMode ?? "tcp";
     const request = ++latestDiagnosis.current;
     setCurrentDiagnosisForward(forward);
-    setDiagnosisMode(probeMode);
     setDiagnosisModalOpen(true);
     setDiagnosisLoading(true);
     setDiagnosisResult(null);
 
     try {
-      const response = await diagnoseForward(forward.id, probeMode);
+      const response = await diagnoseForward(forward.id);
       if (request !== latestDiagnosis.current) return;
       if (response.code === 0) {
         setDiagnosisResult(response.data);
@@ -1669,6 +1678,19 @@ export default function ForwardPage() {
                         <SelectItem key="hash" >哈希模式 - IP哈希</SelectItem>
                       </Select>
                     )}
+                    <Select
+                      label="选择诊断方式"
+                      placeholder="留空时使用 TCP 建连延迟"
+                      selectedKeys={form.probeMode ? [form.probeMode] : []}
+                      onSelectionChange={(keys) => {
+                        const probeMode = Array.from(keys)[0] as ForwardProbeMode | undefined;
+                        setForm(prev => ({ ...prev, probeMode }));
+                      }}
+                      variant="bordered"
+                    >
+                      <SelectItem key="tcp">{PROBE_MODE_LABELS.tcp}</SelectItem>
+                      <SelectItem key="udp_stun">{PROBE_MODE_LABELS.udp_stun}</SelectItem>
+                    </Select>
                   </div>
                 </ModalBody>
                 <ModalFooter>
@@ -2056,28 +2078,9 @@ export default function ForwardPage() {
                 </ModalHeader>
                 <ModalBody>
                   {currentDiagnosisForward && (
-                    <div className="flex flex-wrap gap-2" role="group" aria-label="探测方式">
-                      <Button
-                        size="sm"
-                        variant={diagnosisMode === "tcp" ? "solid" : "flat"}
-                        color={diagnosisMode === "tcp" ? "primary" : "default"}
-                        aria-pressed={diagnosisMode === "tcp"}
-                        isDisabled={diagnosisLoading || diagnosisMode === "tcp"}
-                        onPress={() => handleDiagnose(currentDiagnosisForward, "tcp")}
-                      >
-                        TCP 建连
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant={diagnosisMode === "udp_stun" ? "solid" : "flat"}
-                        color={diagnosisMode === "udp_stun" ? "primary" : "default"}
-                        aria-pressed={diagnosisMode === "udp_stun"}
-                        isDisabled={diagnosisLoading || diagnosisMode === "udp_stun"}
-                        onPress={() => handleDiagnose(currentDiagnosisForward, "udp_stun")}
-                      >
-                        UDP STUN 到 Google
-                      </Button>
-                    </div>
+                    <p className="text-small text-default-500">
+                      {PROBE_MODE_LABELS[diagnosisResult?.probeMode ?? currentDiagnosisForward.probeMode ?? "tcp"]}
+                    </p>
                   )}
                   {diagnosisLoading ? (
                     <div className="flex items-center justify-center py-16">
@@ -2183,7 +2186,7 @@ export default function ForwardPage() {
                   {currentDiagnosisForward && (
                     <Button 
                       color="primary" 
-                      onPress={() => handleDiagnose(currentDiagnosisForward, diagnosisMode)}
+                      onPress={() => handleDiagnose(currentDiagnosisForward)}
                       isLoading={diagnosisLoading}
                     >
                       重新诊断

@@ -219,7 +219,11 @@ func (h *relayHandler) Handle(ctx context.Context, conn net.Conn, opts ...handle
 	ro.Network = network
 	if req.Cmd&relay.CmdMask == stunprobe.TunnelProbeCommand {
 		token, port, _ := net.SplitHostPort(address)
-		if h.hop == nil || network != "udp" || port != "0" || !stunprobe.AcceptTunnelProbe(h.options.Service, token) {
+		var linkOnly, accepted bool
+		if h.hop != nil && network == "udp" && port == "0" {
+			linkOnly, accepted = stunprobe.AcceptTunnelProbe(h.options.Service, token)
+		}
+		if !accepted {
 			resp.Status = relay.StatusUnauthorized
 			_, _ = resp.WriteTo(conn)
 			return ErrUnauthorized
@@ -234,7 +238,7 @@ func (h *relayHandler) Handle(ctx context.Context, conn net.Conn, opts ...handle
 		if _, err := resp.WriteTo(conn); err != nil {
 			return err
 		}
-		return stunprobe.RespondTunnel(ctx, &udpConn{Conn: conn}, func(ctx context.Context, address string) (net.Conn, error) {
+		return stunprobe.RespondTunnel(ctx, &udpConn{Conn: conn}, linkOnly, func(ctx context.Context, address string) (net.Conn, error) {
 			return h.options.Router.Dial(ctx, "udp", address)
 		})
 	}

@@ -7,6 +7,7 @@ import javax.validation.constraints.NotBlank;
 import javax.validation.constraints.NotNull;
 import javax.validation.constraints.Min;
 import javax.validation.constraints.Max;
+import javax.validation.constraints.Pattern;
 
 @Data
 public class ForwardUpdateDto {
@@ -27,6 +28,9 @@ public class ForwardUpdateDto {
     private String remoteAddr;
 
     private String strategy;
+
+    @Pattern(regexp = "tcp|udp_stun", message = "诊断方式仅支持 TCP 建连或 UDP STUN")
+    private String probeMode;
     
     /**
      * 入口端口（可选，为空时自动分配）

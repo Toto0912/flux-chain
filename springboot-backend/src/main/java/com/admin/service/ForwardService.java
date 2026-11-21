@@ -71,7 +71,7 @@ public interface ForwardService extends IService<Forward> {
      * @param id 转发ID
      * @return 诊断结果
      */
-    R diagnoseForward(Long id, String probeMode);
+    R diagnoseForward(Long id);
 
     /**
      * 更新转发排序

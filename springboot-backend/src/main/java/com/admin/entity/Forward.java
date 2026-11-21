@@ -36,6 +36,8 @@ public class Forward extends BaseEntity{
 
     private String strategy;
 
+    private String probeMode;
+
     private Long inFlow;
 
     private Long outFlow;

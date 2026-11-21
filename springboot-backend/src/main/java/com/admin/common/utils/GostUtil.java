@@ -598,6 +598,7 @@ public class GostUtil {
     public static GostDto PrepareForwardUdpStun(Long nodeId, String serviceName) {
         JSONObject data = new JSONObject();
         data.put("service", serviceName + "_tls");
+        data.put("linkOnly", true);
         return WebSocketServer.send_msg(nodeId, data, "PrepareForwardUdpStun");
     }
 
@@ -607,6 +608,7 @@ public class GostUtil {
         if (serviceName != null) {
             data.put("chain", serviceName + "_chains");
             data.put("token", token);
+            data.put("linkOnly", true);
         } else if (StringUtils.isNotBlank(interfaceName)) {
             data.put("interface", interfaceName);
         }

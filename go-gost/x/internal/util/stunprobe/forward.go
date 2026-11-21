@@ -21,8 +21,9 @@ const (
 )
 
 type tunnelTicket struct {
-	service string
-	expires time.Time
+	service  string
+	expires  time.Time
+	linkOnly bool
 }
 
 var pendingTickets = struct {
@@ -31,7 +32,7 @@ var pendingTickets = struct {
 }{values: make(map[string]tunnelTicket)}
 
 // PrepareTunnelProbe issues a one-use ticket for a specific exit service.
-func PrepareTunnelProbe(service string) (string, error) {
+func PrepareTunnelProbe(service string, linkOnly bool) (string, error) {
 	var random [16]byte
 	if _, err := rand.Read(random[:]); err != nil {
 		return "", err
@@ -48,19 +49,19 @@ func PrepareTunnelProbe(service string) (string, error) {
 	if len(pendingTickets.values) >= maxTickets {
 		return "", errors.New("出口节点的探测请求过多，请稍后重试")
 	}
-	pendingTickets.values[token] = tunnelTicket{service: service, expires: now.Add(ticketLifetime)}
+	pendingTickets.values[token] = tunnelTicket{service: service, expires: now.Add(ticketLifetime), linkOnly: linkOnly}
 	return token, nil
 }
 
-func AcceptTunnelProbe(service, token string) bool {
+func AcceptTunnelProbe(service, token string) (linkOnly, accepted bool) {
 	pendingTickets.Lock()
 	defer pendingTickets.Unlock()
 	ticket, exists := pendingTickets.values[token]
 	if !exists || ticket.service != service || !time.Now().Before(ticket.expires) {
-		return false
+		return false, false
 	}
 	delete(pendingTickets.values, token)
-	return true
+	return ticket.linkOnly, true
 }
 
 type tunnelProbeContextKey struct{}
@@ -101,9 +102,9 @@ type TunnelTimings struct {
 	STUNRTT *time.Duration
 }
 
-// MeasureTunnel reads the exit's echo followed by the Google Binding reply.
+// MeasureTunnel reads the exit's echo and, unless linkOnly is set, the Google Binding reply.
 // Both timings start when the datagram is sent over the established tunnel.
-func MeasureTunnel(ctx context.Context, conn net.Conn) (TunnelTimings, error) {
+func MeasureTunnel(ctx context.Context, conn net.Conn, linkOnly bool) (TunnelTimings, error) {
 	var result TunnelTimings
 	var request [stunHeaderLen]byte
 	if err := fillBindingRequest(request[:]); err != nil {
@@ -128,6 +129,9 @@ func MeasureTunnel(ctx context.Context, conn net.Conn) (TunnelTimings, error) {
 	}
 	link := time.Since(started)
 	result.LinkRTT = &link
+	if linkOnly {
+		return result, nil
+	}
 
 	n, err = conn.Read(reply[:])
 	if err != nil {
@@ -142,7 +146,7 @@ func MeasureTunnel(ctx context.Context, conn net.Conn) (TunnelTimings, error) {
 }
 
 // RespondTunnel handles one datagram on an authenticated probe association.
-func RespondTunnel(ctx context.Context, conn net.Conn, dial DialUDP) error {
+func RespondTunnel(ctx context.Context, conn net.Conn, linkOnly bool, dial DialUDP) error {
 	var request [stunHeaderLen + 1]byte
 	n, err := conn.Read(request[:])
 	if err != nil {
@@ -155,6 +159,9 @@ func RespondTunnel(ctx context.Context, conn net.Conn, dial DialUDP) error {
 	}
 	if _, err := conn.Write(packet); err != nil {
 		return err
+	}
+	if linkOnly {
+		return nil
 	}
 	reply, _, err := exchangeGoogle(ctx, packet, dial)
 	if err != nil {
