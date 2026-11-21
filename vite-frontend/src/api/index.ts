@@ -93,6 +93,12 @@ export const checkCaptcha = () => Network.post("/captcha/check");
 export const generateCaptcha = () => Network.post(`/captcha/generate`);
 export const verifyCaptcha = (data: { captchaId: string; trackData: string }) => Network.post("/captcha/verify", data); // 管理员转发链
 export const getForwardChainList = () => Network.post("/forward-chain/list");
+export const updateForwardChainOrder = (ids: number[]) => Network.post("/forward-chain/update-order", { ids });
+export type ForwardChainProbeStatus = {
+  state: "QUEUED" | "RUNNING" | "SWITCHED" | "KEPT" | "FAILED" | "CANCELLED";
+  message: string;
+};
+export const requestForwardChainProbe = (id: number) => Network.post<ForwardChainProbeStatus>("/forward-chain/probe", { id });
 export const createForwardChain = (data: any) => Network.post("/forward-chain/create", data);
 export const updateForwardChain = (data: any) => Network.post("/forward-chain/update", data);
 export const deleteForwardChain = (id: number) => Network.post("/forward-chain/delete", { id });

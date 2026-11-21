@@ -309,6 +309,8 @@ COMMIT;
 -- 管理员多跳转发链
 CREATE TABLE IF NOT EXISTS `forward_chain` (
   `id` bigint NOT NULL AUTO_INCREMENT,
+  `user_id` bigint DEFAULT NULL,
+  `sort_order` int DEFAULT NULL,
   `name` varchar(100) NOT NULL,
   `in_node_id` bigint NOT NULL,
   `in_port` int NOT NULL,

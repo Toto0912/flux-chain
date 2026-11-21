@@ -166,7 +166,7 @@ jobs:
           set -euo pipefail
           version=$(cat VERSION)
           python3 scripts/check_release.py "$GITHUB_REF_NAME"
-          release_notes="FluxChain v$version 修复用户改名后转发管理仍显示旧用户名的问题。转发列表现在按用户 ID 查询当前用户名，重新加载列表即可更新已有转发的显示名称。安装与更新说明见 https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/README.md 。"
+          release_notes="FluxChain v$version 新增转发链的持久化拖拽排序，并支持按创建者和入口服务器分类显示。卡片展示入口与目标地址、当前路径延迟和流量，并可展开候选路径。手动探测与定时探测共用队列，优先处理手动任务，合并同链请求，并在整轮结束后按切换阈值自动选路。升级后首次打开转发链页面时，旧链路会归到当前登录的管理员名下。安装与更新说明见 https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/README.md 。"
           if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release create "$GITHUB_REF_NAME" --verify-tag --draft --title "FluxChain v$version" --notes "$release_notes"
           fi

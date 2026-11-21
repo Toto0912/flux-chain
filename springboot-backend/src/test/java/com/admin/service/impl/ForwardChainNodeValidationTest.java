@@ -48,7 +48,7 @@ class ForwardChainNodeValidationTest {
 
     @Test
     void rejectsRepeatedCandidatesAcrossHopsBeforeCreatingAnything() {
-        R result = service.createChain(dto(new long[]{2, 3}, new long[]{3, 4}));
+        R result = service.createChain(dto(new long[]{2, 3}, new long[]{3, 4}), 1L);
         assertTrue(result.getMsg().contains("不同跳"));
         assertNotEquals(0, result.getCode());
         verify(mapper, never()).insert(any());
@@ -56,21 +56,21 @@ class ForwardChainNodeValidationTest {
 
     @Test
     void rejectsNonAdjacentRepeatedCandidates() {
-        R result = service.createChain(dto(new long[]{2}, new long[]{3}, new long[]{2, 4}));
+        R result = service.createChain(dto(new long[]{2}, new long[]{3}, new long[]{2, 4}), 1L);
         assertNotEquals(0, result.getCode());
         assertTrue(result.getMsg().contains("不同跳"));
     }
 
     @Test
     void rejectsRepeatedCandidatesWithinOneHop() {
-        R result = service.createChain(dto(new long[]{2, 2}));
+        R result = service.createChain(dto(new long[]{2, 2}), 1L);
         assertNotEquals(0, result.getCode());
         assertTrue(result.getMsg().contains("同一跳"));
     }
 
     @Test
     void rejectsEntryAsCandidate() {
-        R result = service.createChain(dto(new long[]{1, 2}));
+        R result = service.createChain(dto(new long[]{1, 2}), 1L);
         assertNotEquals(0, result.getCode());
         assertTrue(result.getMsg().contains("入口节点"));
     }

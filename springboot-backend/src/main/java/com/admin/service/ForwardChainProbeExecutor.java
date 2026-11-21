@@ -1,14 +1,20 @@
 package com.admin.service;
 
+import com.admin.common.dto.ForwardChainProbeStatus;
+import com.admin.common.dto.ForwardChainProbeStatus.State;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import javax.annotation.PreDestroy;
+import java.util.ArrayDeque;
+import java.util.Deque;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.IntConsumer;
+import java.util.function.Supplier;
 
 /** Bounded workers with one queued/running probe cycle per chain. */
 @Slf4j
@@ -16,42 +22,143 @@ import java.util.function.IntConsumer;
 public class ForwardChainProbeExecutor implements AutoCloseable {
     private static final int CHAIN_CONCURRENCY = 2;
     private static final int PATH_CONCURRENCY = 16;
+    private static final int CHAIN_QUEUE_CAPACITY = 32;
+    private static final int MAX_MANUAL_STARTS = 2;
+    private static final ForwardChainProbeStatus QUEUED = new ForwardChainProbeStatus(State.QUEUED, "手动探测排队中");
+    private static final ForwardChainProbeStatus RUNNING = new ForwardChainProbeStatus(State.RUNNING, "手动探测中");
+    private static final ForwardChainProbeStatus BUSY = new ForwardChainProbeStatus(State.BUSY, "探测队列已满，请稍后重试");
+
     private final ExecutorService chainWorkers;
     private final ExecutorService pathWorkers;
-    private final Set<Long> pendingChains = ConcurrentHashMap.newKeySet();
-    private final AtomicBoolean closed = new AtomicBoolean();
+    private final Deque<Cycle> automaticQueue = new ArrayDeque<>();
+    private final Deque<Cycle> manualQueue = new ArrayDeque<>();
+    private final Map<Long, Cycle> cycles = new HashMap<>();
+    private final Map<Long, ForwardChainProbeStatus> manualStatuses = new HashMap<>();
+    private final int chainConcurrency;
     private final int pathConcurrency;
+    private final int queueCapacity;
+    private int runningCount;
+    private int manualStarts;
+    private boolean closed;
 
     public ForwardChainProbeExecutor() {
-        this(new ThreadPoolExecutor(CHAIN_CONCURRENCY, CHAIN_CONCURRENCY, 0L, TimeUnit.MILLISECONDS,
-                        new ArrayBlockingQueue<>(32)),
-                new ThreadPoolExecutor(PATH_CONCURRENCY, PATH_CONCURRENCY, 0L, TimeUnit.MILLISECONDS,
-                        new ArrayBlockingQueue<>(CHAIN_CONCURRENCY * PATH_CONCURRENCY)), PATH_CONCURRENCY);
+        this(CHAIN_CONCURRENCY, PATH_CONCURRENCY, CHAIN_QUEUE_CAPACITY);
     }
 
-    ForwardChainProbeExecutor(ExecutorService chainWorkers, ExecutorService pathWorkers, int pathConcurrency) {
-        this.chainWorkers = chainWorkers;
-        this.pathWorkers = pathWorkers;
+    ForwardChainProbeExecutor(int chainConcurrency, int pathConcurrency, int queueCapacity) {
+        this.chainConcurrency = chainConcurrency;
         this.pathConcurrency = pathConcurrency;
+        this.queueCapacity = queueCapacity;
+        this.chainWorkers = new ThreadPoolExecutor(chainConcurrency, chainConcurrency, 0L, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(chainConcurrency));
+        this.pathWorkers = new ThreadPoolExecutor(pathConcurrency, pathConcurrency, 0L, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(chainConcurrency * pathConcurrency));
     }
 
-    public boolean submitIfIdle(Long chainId, Runnable cycle) {
-        if (closed.get() || !pendingChains.add(chainId)) return false;
+    public synchronized boolean submitIfIdle(Long chainId, Supplier<ForwardChainProbeStatus> probe) {
+        if (closed || cycles.containsKey(chainId) || !hasSpace(false)) return false;
+        Cycle cycle = new Cycle(chainId, probe);
+        cycles.put(chainId, cycle);
+        automaticQueue.addLast(cycle);
+        dispatch();
+        return true;
+    }
+
+    public synchronized ForwardChainProbeStatus submitManual(Long chainId, Supplier<ForwardChainProbeStatus> probe) {
+        if (closed) return BUSY;
+        Cycle cycle = cycles.get(chainId);
+        if (cycle == null) {
+            if (!hasSpace(true)) return BUSY;
+            cycle = new Cycle(chainId, probe);
+            cycles.put(chainId, cycle);
+            manualQueue.addLast(cycle);
+        } else if (!cycle.manual && !cycle.started) {
+            automaticQueue.remove(cycle);
+            manualQueue.addLast(cycle);
+        }
+        cycle.manual = true;
+        manualStatuses.put(chainId, cycle.started ? RUNNING : QUEUED);
+        dispatch();
+        return manualStatuses.get(chainId);
+    }
+
+    public synchronized Map<Long, ForwardChainProbeStatus> manualStatusSnapshot() {
+        return Map.copyOf(manualStatuses);
+    }
+
+    public synchronized void cancelQueued(Long chainId) {
+        Cycle cycle = removeQueued(chainId);
+        if (cycle != null && cycle.manual) {
+            manualStatuses.put(chainId, new ForwardChainProbeStatus(State.CANCELLED, "转发链已暂停，本轮探测已取消"));
+        }
+    }
+
+    public synchronized void forgetChain(Long chainId) {
+        removeQueued(chainId);
+        Cycle running = cycles.get(chainId);
+        if (running != null) running.manual = false;
+        manualStatuses.remove(chainId);
+    }
+
+    private Cycle removeQueued(Long chainId) {
+        Cycle cycle = cycles.get(chainId);
+        if (cycle == null || cycle.started) return null;
+        (cycle.manual ? manualQueue : automaticQueue).remove(cycle);
+        cycles.remove(chainId);
+        return cycle;
+    }
+
+    private boolean hasSpace(boolean manual) {
+        if (runningCount < chainConcurrency) return true;
+        return manualQueue.size() + automaticQueue.size() < queueCapacity
+                && (manual || automaticQueue.size() < queueCapacity - 1);
+    }
+
+    private void dispatch() {
+        while (!closed && runningCount < chainConcurrency && (!automaticQueue.isEmpty() || !manualQueue.isEmpty())) {
+            Cycle cycle;
+            if (!manualQueue.isEmpty() && (automaticQueue.isEmpty() || manualStarts < MAX_MANUAL_STARTS)) {
+                cycle = manualQueue.removeFirst();
+                manualStarts = automaticQueue.isEmpty() ? 0 : manualStarts + 1;
+            } else {
+                cycle = automaticQueue.removeFirst();
+                manualStarts = 0;
+            }
+            cycle.started = true;
+            runningCount++;
+            if (cycle.manual) manualStatuses.put(cycle.chainId, RUNNING);
+            chainWorkers.execute(() -> run(cycle));
+        }
+    }
+
+    private void run(Cycle cycle) {
+        ForwardChainProbeStatus status = new ForwardChainProbeStatus(State.FAILED, "探测未完成，请稍后重试");
         try {
-            chainWorkers.execute(() -> {
-                try {
-                    cycle.run();
-                } catch (Exception e) {
-                    log.warn("转发链 {} 探测失败，将在下一周期重试", chainId, e);
-                } finally {
-                    pendingChains.remove(chainId);
-                }
-            });
-            return true;
-        } catch (RejectedExecutionException e) {
-            // A full queue is retried by the scheduler; it must not retain the ID.
-            pendingChains.remove(chainId);
-            return false;
+            status = cycle.probe.get();
+        } catch (Exception error) {
+            log.warn("转发链 {} 探测失败，将在下一周期重试", cycle.chainId, error);
+        } finally {
+            finish(cycle, status);
+        }
+    }
+
+    private synchronized void finish(Cycle cycle, ForwardChainProbeStatus status) {
+        if (closed) return;
+        cycles.remove(cycle.chainId);
+        runningCount--;
+        if (cycle.manual) manualStatuses.put(cycle.chainId, status);
+        dispatch();
+    }
+
+    private static final class Cycle {
+        private final Long chainId;
+        private final Supplier<ForwardChainProbeStatus> probe;
+        private boolean manual;
+        private boolean started;
+
+        private Cycle(Long chainId, Supplier<ForwardChainProbeStatus> probe) {
+            this.chainId = chainId;
+            this.probe = probe;
         }
     }
 
@@ -81,10 +188,13 @@ public class ForwardChainProbeExecutor implements AutoCloseable {
 
     @Override
     @PreDestroy
-    public void close() {
-        closed.set(true);
+    public synchronized void close() {
+        closed = true;
+        automaticQueue.clear();
+        manualQueue.clear();
+        cycles.clear();
+        manualStatuses.clear();
         chainWorkers.shutdownNow();
         pathWorkers.shutdownNow();
-        pendingChains.clear();
     }
 }

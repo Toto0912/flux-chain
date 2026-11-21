@@ -96,7 +96,7 @@ class NodePortAllocationTest {
         dto.setInPort(28100);
         dto.setTargetPort(28777);
         dto.setHops(List.of(hop(3)));
-        assertNotEquals(0, chains.createChain(dto).getCode());
+        assertNotEquals(0, chains.createChain(dto, 1L).getCode());
         verify(chainMapper, never()).insert(any());
     }
 
@@ -132,7 +132,7 @@ class NodePortAllocationTest {
     @Test
     void chainAutoAllocationReportsExhaustionWithoutSaving() {
         when(chainMapper.selectList(any())).thenReturn(List.of(chain(7, 1, 28100, "{\"1\":28101}"), chain(8, 1, 28102, "{\"1\":28103}"), chain(9, 1, 28104, "{\"1\":28105}")));
-        assertTrue(chains.createChain(autoChain()).getMsg().contains("已用尽"));
+        assertTrue(chains.createChain(autoChain(), 1L).getMsg().contains("已用尽"));
         verify(chainMapper, never()).insert(any());
     }
 

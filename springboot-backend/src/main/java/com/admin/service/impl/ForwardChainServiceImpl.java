@@ -1,6 +1,8 @@
 package com.admin.service.impl;
 
 import com.admin.common.dto.ForwardChainDto;
+import com.admin.common.dto.ForwardChainProbeStatus;
+import com.admin.common.dto.ForwardChainProbeStatus.State;
 import com.admin.common.annotation.SerializeNodePorts;
 import com.admin.common.dto.GostDto;
 import com.admin.common.lang.R;
@@ -16,7 +18,9 @@ import com.admin.service.NodeService;
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -42,18 +46,55 @@ public class ForwardChainServiceImpl extends ServiceImpl<ForwardChainMapper, For
     @Resource private ForwardChainProbeExecutor probeExecutor;
 
     @Override
-    public R listChains() {
-        List<ForwardChain> chains = list(new QueryWrapper<ForwardChain>().orderByDesc("id"));
+    public R listChains(Long currentAdminId) {
+        // A terminal probe status is published only after the corresponding database update.
+        Map<Long, ForwardChainProbeStatus> probeStatuses = probeExecutor.manualStatusSnapshot();
+        List<ForwardChain> chains = baseMapper.selectDisplayList();
+        if (chains.stream().anyMatch(chain -> chain.getUserId() == null)) {
+            // Older rows did not record a creator. Assign them once to the authenticated administrator.
+            update(new LambdaUpdateWrapper<ForwardChain>().isNull(ForwardChain::getUserId)
+                    .set(ForwardChain::getUserId, currentAdminId));
+            chains = baseMapper.selectDisplayList();
+        }
+        chains.forEach(chain -> chain.setManualProbe(probeStatuses.get(chain.getId())));
         return R.ok(chains);
+    }
+
+    @Override
+    public R requestProbe(Long id) {
+        if (id == null) return R.err("缺少转发链ID");
+        ForwardChain chain = getOne(new LambdaQueryWrapper<ForwardChain>()
+                .select(ForwardChain::getStatus).eq(ForwardChain::getId, id));
+        if (chain == null) return R.err("转发链不存在");
+        if (!Objects.equals(chain.getStatus(), 1)) return R.err("转发链已暂停，请启用后再探测");
+        ForwardChainProbeStatus request = probeExecutor.submitManual(id, () -> runProbeCycle(id));
+        return request.state() == State.BUSY ? R.err(request.message()) : R.ok(request);
+    }
+
+    @Override
+    @Transactional
+    public R updateOrder(List<Long> ids) {
+        if (ids == null || ids.isEmpty()) return R.err("缺少转发链排序数据");
+        Set<Long> requestedIds = new HashSet<>(ids);
+        if (requestedIds.contains(null) || requestedIds.size() != ids.size()) {
+            return R.err("转发链排序数据无效");
+        }
+        List<Long> currentIds = baseMapper.lockChainIds();
+        if (currentIds.size() != ids.size() || !requestedIds.containsAll(currentIds)) {
+            return R.err("转发链列表已变更，请刷新后重试");
+        }
+        baseMapper.updateDisplayOrder(ids);
+        return R.ok();
     }
 
     @Override
     @Transactional
     @SerializeNodePorts
-    public synchronized R createChain(ForwardChainDto dto) {
+    public synchronized R createChain(ForwardChainDto dto, Long userId) {
         String error = validate(dto, null);
         if (error != null) return R.err(error);
         ForwardChain chain = new ForwardChain();
+        chain.setUserId(userId);
         copySettings(dto, chain);
         chain.setPathsJson("[]");
         chain.setEndpointPortsJson("{}");
@@ -125,7 +166,9 @@ public class ForwardChainServiceImpl extends ServiceImpl<ForwardChainMapper, For
         ForwardChain chain = getById(id);
         if (chain == null) return R.err("转发链不存在");
         teardown(chain);
-        return removeById(id) ? R.ok() : R.err("删除转发链失败");
+        if (!removeById(id)) return R.err("删除转发链失败");
+        probeExecutor.forgetChain(id);
+        return R.ok();
     }
 
     @Override
@@ -142,6 +185,7 @@ public class ForwardChainServiceImpl extends ServiceImpl<ForwardChainMapper, For
         chain.setStatus(status);
         chain.setUpdatedTime(System.currentTimeMillis());
         updateById(chain);
+        if (status == 0) probeExecutor.cancelQueued(id);
         return R.ok(chain);
     }
 
@@ -698,7 +742,8 @@ public class ForwardChainServiceImpl extends ServiceImpl<ForwardChainMapper, For
         long now = System.currentTimeMillis();
         // Oldest/unstarted cycles get the next free queue slot; a busy panel
         // must not continually requeue earlier IDs ahead of unstarted chains.
-        for (ForwardChain chain : list(new QueryWrapper<ForwardChain>().eq("status", 1).orderByAsc("last_probe_time", "id"))) {
+        for (ForwardChain chain : list(new QueryWrapper<ForwardChain>()
+                .select("id", "last_probe_time", "probe_interval_ms").eq("status", 1).orderByAsc("last_probe_time", "id"))) {
             if (chain.getLastProbeTime() != null && now - chain.getLastProbeTime() < chain.getProbeIntervalMs()) continue;
             probeExecutor.submitIfIdle(chain.getId(), () -> runProbeCycle(chain.getId()));
         }
@@ -707,55 +752,75 @@ public class ForwardChainServiceImpl extends ServiceImpl<ForwardChainMapper, For
     @org.springframework.scheduling.annotation.Scheduled(fixedDelay = 1000)
     public void scheduleProbes() { probeDueChains(); }
 
-    private void runProbeCycle(Long id) {
+    private ForwardChainProbeStatus runProbeCycle(Long id) {
         ForwardChain chain;
         synchronized (this) {
             chain = getById(id);
-            if (chain == null || !Objects.equals(chain.getStatus(), 1)) return;
+            if (chain == null || !Objects.equals(chain.getStatus(), 1)) {
+                return new ForwardChainProbeStatus(State.CANCELLED, "转发链已暂停或删除，本轮探测已取消");
+            }
             // Measure intervals from actual execution, not time spent in the queue.
-            chain.setLastProbeTime(System.currentTimeMillis());
-            updateById(chain);
+            update(new LambdaUpdateWrapper<ForwardChain>().eq(ForwardChain::getId, id)
+                    .set(ForwardChain::getLastProbeTime, System.currentTimeMillis()));
         }
         JSONArray paths = JSON.parseArray(chain.getPathsJson());
+        if (paths == null || paths.isEmpty()) {
+            return new ForwardChainProbeStatus(State.FAILED, "转发链没有可探测的候选路径");
+        }
         try {
-            // Wait for the whole cycle. A fixed timeout for all paths used to
-            // release the chain while slower paths were still being probed.
+            // Collect the entire round before publishing results and choosing a path.
             String stunKey = usesUdpStun(chain) ? udpStunKey(chain, nodeService.getById(chain.getInNodeId())) : null;
             probeExecutor.probePaths(paths.size(), index -> probePath(chain, paths.getJSONObject(index), stunKey));
-            applyProbeResults(chain);
+            return applyProbeResults(chain, paths);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.info("转发链 {} 探测已中断", id);
+            return new ForwardChainProbeStatus(State.CANCELLED, "本轮探测已中断");
         }
     }
 
-    private synchronized void applyProbeResults(ForwardChain chain) {
-            Long id = chain.getId();
-            ForwardChain updated = getById(id);
-            if (!sameDeployment(chain, updated)) return;
-            JSONArray fresh = JSON.parseArray(updated.getPathsJson());
-            int oldSelected = updated.getSelectedPathIndex() == null ? 0 : updated.getSelectedPathIndex();
-            if (fresh.isEmpty()) return;
-            List<Double> latencies = new ArrayList<>();
-            List<Boolean> availability = new ArrayList<>();
-            for (int i = 0; i < fresh.size(); i++) {
-                JSONObject path = fresh.getJSONObject(i);
-                availability.add(Boolean.TRUE.equals(path.getBoolean("available")));
-                latencies.add(path.getDouble("latencyMs"));
+    private synchronized ForwardChainProbeStatus applyProbeResults(ForwardChain chain, JSONArray fresh) {
+        Long id = chain.getId();
+        ForwardChain updated = getById(id);
+        if (!sameDeployment(chain, updated)) {
+            return new ForwardChainProbeStatus(State.CANCELLED, "转发链配置或状态已变更，本轮结果已作废");
+        }
+
+        int oldSelected = updated.getSelectedPathIndex() == null ? 0 : updated.getSelectedPathIndex();
+        List<Double> latencies = new ArrayList<>();
+        List<Boolean> availability = new ArrayList<>();
+        for (int i = 0; i < fresh.size(); i++) {
+            JSONObject path = fresh.getJSONObject(i);
+            availability.add(Boolean.TRUE.equals(path.getBoolean("available")));
+            latencies.add(path.getDouble("latencyMs"));
+        }
+        int selected = com.admin.common.utils.ForwardChainSelection.choosePath(latencies, availability, oldSelected, updated.getSwitchThresholdMs());
+        ForwardChainProbeStatus result;
+        if (selected != oldSelected) {
+            GostDto changed = configureIngress(updated, fresh.getJSONObject(selected), true);
+            if (success(changed)) {
+                result = new ForwardChainProbeStatus(State.SWITCHED, "手动探测完成，已切换路径");
+            } else {
+                log.warn("转发链 {} 路径切换失败: {}", id, changed == null ? "节点无响应" : changed.getMsg());
+                selected = oldSelected;
+                result = new ForwardChainProbeStatus(State.FAILED, "路径切换失败，保留当前路径");
             }
-            int selected = com.admin.common.utils.ForwardChainSelection.choosePath(latencies, availability, oldSelected, updated.getSwitchThresholdMs());
-            if (selected != oldSelected && Objects.equals(updated.getStatus(), 1)) {
-                GostDto changed = configureIngress(updated, fresh.getJSONObject(selected), true);
-                if (!success(changed)) { log.warn("转发链 {} 路径切换失败: {}", id, changed.getMsg()); selected = oldSelected; }
-            }
-            updated.setPathsJson(fresh.toJSONString());
-            updated.setSelectedPathIndex(selected);
-            updated.setUpdatedTime(System.currentTimeMillis());
-            updateById(updated);
+        } else {
+            String message = availability.contains(true) ? "手动探测完成，保持当前路径" : "所有路径均不可用，保留当前路径";
+            result = new ForwardChainProbeStatus(State.KEPT, message);
+        }
+        boolean saved = update(new LambdaUpdateWrapper<ForwardChain>().eq(ForwardChain::getId, id)
+                .set(ForwardChain::getPathsJson, fresh.toJSONString())
+                .set(ForwardChain::getSelectedPathIndex, selected)
+                .set(ForwardChain::getUpdatedTime, System.currentTimeMillis()));
+        return saved ? result : new ForwardChainProbeStatus(State.FAILED, "保存探测结果失败");
     }
 
     private void probePath(ForwardChain chain, JSONObject path, String stunKey) {
         Long entryId = chain.getInNodeId();
+        path.put("available", false);
+        path.put("latencyMs", null);
+        path.put("error", "该路径探测未完成");
         try {
             boolean udpStun = usesUdpStun(chain);
             GostDto result;
@@ -782,20 +847,13 @@ public class ForwardChainServiceImpl extends ServiceImpl<ForwardChainMapper, For
             path.put("error", "探测失败：" + e.getMessage());
         }
         path.put("lastProbeTime", System.currentTimeMillis());
-        synchronized (this) {
-            ForwardChain latest = getById(chain.getId());
-            if (!sameDeployment(chain, latest)) return;
-            JSONArray all = JSON.parseArray(latest.getPathsJson());
-            for (int i = 0; i < all.size(); i++) if (all.getJSONObject(i).getString("name").equals(path.getString("name"))) { all.set(i, path); break; }
-            latest.setPathsJson(all.toJSONString());
-            updateById(latest);
-        }
     }
 
     private boolean sameDeployment(ForwardChain snapshot, ForwardChain current) {
         // A probe started before a protocol/port edit must never restore its old
         // path endpoints or retarget the new raw UDP ingress to a retired port.
         return current != null && Objects.equals(current.getStatus(), 1)
+                && Objects.equals(snapshot.getUpdatedTime(), current.getUpdatedTime())
                 && sameTopology(snapshot, current)
                 && usesUdpStun(snapshot) == usesUdpStun(current)
                 && Objects.equals(snapshot.getEndpointPortsJson(), current.getEndpointPortsJson());

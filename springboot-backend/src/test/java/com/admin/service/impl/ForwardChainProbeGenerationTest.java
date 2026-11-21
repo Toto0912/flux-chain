@@ -1,7 +1,9 @@
 package com.admin.service.impl;
 
+import com.admin.common.dto.ForwardChainProbeStatus;
 import com.admin.entity.ForwardChain;
 import com.admin.mapper.ForwardChainMapper;
+import com.alibaba.fastjson.JSONArray;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 
@@ -29,8 +31,9 @@ class ForwardChainProbeGenerationTest {
         ForwardChainMapper mapper = mock(ForwardChainMapper.class);
         ReflectionTestUtils.setField(service, "baseMapper", mapper);
         when(mapper.selectById(any())).thenReturn(current);
-        ReflectionTestUtils.invokeMethod(service, "applyProbeResults", snapshot);
-        verify(mapper, never()).updateById(any());
+        ForwardChainProbeStatus result = ReflectionTestUtils.invokeMethod(service, "applyProbeResults", snapshot, new JSONArray());
+        assertEquals(ForwardChainProbeStatus.State.CANCELLED, result.state());
+        verify(mapper, never()).update(any(), any());
     }
 
     @Test void protocolSwitchCannotApplyOldProbePaths() {
@@ -51,6 +54,14 @@ class ForwardChainProbeGenerationTest {
         ForwardChain current = chain("udp", "{\"2\":28200}");
         current.setStatus(0);
         staleProbeDoesNotWrite(chain("udp", "{\"2\":28200}"), current);
+    }
+
+    @Test void resumedChainRejectsTheProbeThatStartedBeforeItsStatusChanged() {
+        ForwardChain snapshot = chain("udp", "{\"2\":28200}");
+        snapshot.setUpdatedTime(1000L);
+        ForwardChain resumed = chain("udp", "{\"2\":28200}");
+        resumed.setUpdatedTime(2000L);
+        staleProbeDoesNotWrite(snapshot, resumed);
     }
 
     @Test void sameDeploymentAllowsUpdatedStatisticsAndSelection() {

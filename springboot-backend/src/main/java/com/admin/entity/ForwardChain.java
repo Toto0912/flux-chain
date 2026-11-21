@@ -1,5 +1,7 @@
 package com.admin.entity;
 
+import com.admin.common.dto.ForwardChainProbeStatus;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
@@ -8,6 +10,9 @@ import lombok.EqualsAndHashCode;
 @EqualsAndHashCode(callSuper = true)
 @TableName("forward_chain")
 public class ForwardChain extends BaseEntity {
+    private Long userId;
+    @TableField(exist = false)
+    private String userName;
     private String name;
     private Long inNodeId;
     private Integer inPort;
@@ -25,4 +30,6 @@ public class ForwardChain extends BaseEntity {
     private Long lastProbeTime;
     private Long inFlow;
     private Long outFlow;
+    @TableField(exist = false)
+    private ForwardChainProbeStatus manualProbe;
 }

@@ -3,6 +3,8 @@
 -- 管理员多跳转发链
 CREATE TABLE IF NOT EXISTS `forward_chain` (
   `id` bigint NOT NULL AUTO_INCREMENT,
+  `user_id` bigint DEFAULT NULL,
+  `sort_order` int DEFAULT NULL,
   `name` varchar(100) NOT NULL,
   `in_node_id` bigint NOT NULL,
   `in_port` int NOT NULL,
@@ -37,6 +39,26 @@ SET @chain_probe_migration = IF(
 PREPARE chain_probe_stmt FROM @chain_probe_migration;
 EXECUTE chain_probe_stmt;
 DEALLOCATE PREPARE chain_probe_stmt;
+
+SET @chain_user_migration = IF(
+  EXISTS (SELECT 1 FROM information_schema.COLUMNS
+          WHERE table_schema = DATABASE() AND table_name = 'forward_chain' AND column_name = 'user_id'),
+  'SELECT 1',
+  'ALTER TABLE `forward_chain` ADD COLUMN `user_id` bigint DEFAULT NULL'
+);
+PREPARE chain_user_stmt FROM @chain_user_migration;
+EXECUTE chain_user_stmt;
+DEALLOCATE PREPARE chain_user_stmt;
+
+SET @chain_order_migration = IF(
+  EXISTS (SELECT 1 FROM information_schema.COLUMNS
+          WHERE table_schema = DATABASE() AND table_name = 'forward_chain' AND column_name = 'sort_order'),
+  'SELECT 1',
+  'ALTER TABLE `forward_chain` ADD COLUMN `sort_order` int DEFAULT NULL'
+);
+PREPARE chain_order_stmt FROM @chain_order_migration;
+EXECUTE chain_order_stmt;
+DEALLOCATE PREPARE chain_order_stmt;
 
 -- FluxChain：仅替换旧项目默认名称，保留自定义的网站名称。
 UPDATE `vite_config` SET `value` = 'FluxChain'
