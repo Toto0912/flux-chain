@@ -166,7 +166,7 @@ jobs:
           set -euo pipefail
           version=$(cat VERSION)
           python3 scripts/check_release.py "$GITHUB_REF_NAME"
-          release_notes="FluxChain v$version 新增原生 UDP 转发链到 Google STUN 的往返延迟探测，最短探测间隔为 5 秒。普通端口转发和隧道转发也可进行 UDP STUN 诊断，隧道还单独显示入口到出口的 UDP 回显延迟。修复持续探测后探测监听器可能持续超时的问题。启用 UDP 探测前请更新参与探测的节点程序。安装与更新说明见 https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/README.md 。"
+          release_notes="FluxChain v$version 修复用户改名后转发管理仍显示旧用户名的问题。转发列表现在按用户 ID 查询当前用户名，重新加载列表即可更新已有转发的显示名称。安装与更新说明见 https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/README.md 。"
           if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release create "$GITHUB_REF_NAME" --verify-tag --draft --title "FluxChain v$version" --notes "$release_notes"
           fi

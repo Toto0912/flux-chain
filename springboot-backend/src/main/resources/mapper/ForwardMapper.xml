@@ -15,7 +15,7 @@
             f.status,
             f.created_time AS createdTime,
             f.updated_time AS updatedTime,
-            f.user_name AS userName,
+            COALESCE(u.`user`, f.user_name) AS userName,
             f.in_flow AS inFlow,
             f.strategy AS strategy,
             f.out_flow AS outFlow,
@@ -28,6 +28,7 @@
             t.protocol
         FROM 
             forward f
+        LEFT JOIN `user` u ON u.id = f.user_id
         LEFT JOIN 
             tunnel t ON f.tunnel_id = t.id
         ORDER BY 
@@ -47,7 +48,7 @@
             f.status,
             f.created_time AS createdTime,
             f.updated_time AS updatedTime,
-            f.user_name AS userName,
+            COALESCE(u.`user`, f.user_name) AS userName,
             f.in_flow AS inFlow,
             f.out_flow AS outFlow,
             f.strategy AS strategy,
@@ -60,6 +61,7 @@
             t.protocol
         FROM 
             forward f
+        LEFT JOIN `user` u ON u.id = f.user_id
         LEFT JOIN 
             tunnel t ON f.tunnel_id = t.id
         WHERE 
