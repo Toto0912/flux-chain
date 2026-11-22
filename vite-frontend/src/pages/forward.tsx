@@ -47,6 +47,7 @@ import {
 } from "@/api";
 import { JwtUtil } from "@/utils/jwt";
 import { defaultTargetHealth, TargetHealthDialog, TargetHealthFields, type TargetHealthSettings } from "@/components/forward-target-health";
+import { UDP_ECHO_PORT, UdpEchoInstall } from "@/components/udp-echo-install";
 
 interface Forward {
   id: number;
@@ -93,6 +94,7 @@ interface ForwardForm {
 const PROBE_MODE_LABELS: Record<ForwardProbeMode, string> = {
   tcp: "TCP建连延迟",
   udp_stun: "UDP STUN到Google延迟",
+  udp_echo: "UDP 回显",
 };
 
 interface AddressItem {
@@ -105,6 +107,8 @@ interface DiagnosisResult {
   forwardName: string;
   tunnelType?: string;
   probeMode?: ForwardProbeMode;
+  truncated?: boolean;
+  warningMessage?: string;
   timestamp: number;
   results: Array<{
     success: boolean;
@@ -662,6 +666,12 @@ export default function ForwardPage() {
       if (request !== latestDiagnosis.current) return;
       if (response.code === 0) {
         setDiagnosisResult(response.data);
+        if (response.data?.truncated || response.data?.warningMessage) {
+          toast(response.data.warningMessage || '诊断耗时超过 20 秒已自动中断，请稍后再试', {
+            icon: '⚠️',
+            duration: 5000,
+          });
+        }
       } else {
         toast.error(response.msg || '诊断失败');
         setDiagnosisResult({
@@ -1708,19 +1718,26 @@ export default function ForwardPage() {
                       </>
                     )}
                     {!formHealthEnabled && (
-                      <Select
-                        label="选择诊断方式"
-                        placeholder="留空时使用 TCP 建连延迟"
-                        selectedKeys={form.probeMode ? [form.probeMode] : []}
-                        onSelectionChange={(keys) => {
-                          const probeMode = Array.from(keys)[0] as ForwardProbeMode | undefined;
-                          setForm(prev => ({ ...prev, probeMode }));
-                        }}
-                        variant="bordered"
-                      >
-                        <SelectItem key="tcp">{PROBE_MODE_LABELS.tcp}</SelectItem>
-                        <SelectItem key="udp_stun">{PROBE_MODE_LABELS.udp_stun}</SelectItem>
-                      </Select>
+                      <>
+                        <Select
+                          label="选择诊断方式"
+                          placeholder="留空时使用 TCP 建连延迟"
+                          description={form.probeMode === "udp_echo"
+                            ? `测量到目标服务器 ${UDP_ECHO_PORT}/UDP 的往返延迟。`
+                            : undefined}
+                          selectedKeys={form.probeMode ? [form.probeMode] : []}
+                          onSelectionChange={(keys) => {
+                            const probeMode = Array.from(keys)[0] as ForwardProbeMode | undefined;
+                            setForm(prev => ({ ...prev, probeMode }));
+                          }}
+                          variant="bordered"
+                        >
+                          <SelectItem key="tcp">{PROBE_MODE_LABELS.tcp}</SelectItem>
+                          <SelectItem key="udp_stun">{PROBE_MODE_LABELS.udp_stun}</SelectItem>
+                          <SelectItem key="udp_echo">{PROBE_MODE_LABELS.udp_echo}</SelectItem>
+                        </Select>
+                        {form.probeMode === "udp_echo" && <UdpEchoInstall />}
+                      </>
                     )}
                   </div>
                 </ModalBody>
@@ -2127,13 +2144,21 @@ export default function ForwardPage() {
                     </div>
                   ) : diagnosisResult ? (
                     <div className="space-y-4">
+                      {diagnosisResult.warningMessage && (
+                        <Alert
+                          color="warning"
+                          variant="flat"
+                          title="诊断已超时中断"
+                          description={diagnosisResult.warningMessage}
+                        />
+                      )}
                       {diagnosisResult.results.map((result, index) => {
-                        const udpStun = diagnosisResult.probeMode === "udp_stun";
-                        const quality = udpStun ? null : getQualityDisplay(result.averageTime, result.packetLoss);
+                        const udpProbe = diagnosisResult.probeMode === "udp_stun" || diagnosisResult.probeMode === "udp_echo";
+                        const quality = udpProbe ? null : getQualityDisplay(result.averageTime, result.packetLoss);
                         const host = result.targetIp ?? "-";
                         const address = result.targetPort == null ? host :
                           `${host.includes(":") ? `[${host}]` : host}:${result.targetPort}`;
-                        const status = udpStun
+                        const status = udpProbe
                           ? (result.success ? "收到回包" : "探测失败")
                           : (result.success ? "连接成功" : "连接失败");
                         
@@ -2159,7 +2184,7 @@ export default function ForwardPage() {
                             
                             <CardBody className="pt-0">
                               <div className="space-y-3">
-                                {result.success && (udpStun ? (
+                                {result.success && (udpProbe ? (
                                   <div className="flex items-baseline gap-2">
                                     <span className="text-2xl font-bold text-primary">{result.latencyMs?.toFixed(1)}</span>
                                     <span className="text-small text-default-500">ms RTT</span>
@@ -2187,7 +2212,7 @@ export default function ForwardPage() {
                                   </div>
                                 ))}
                                 <div className="text-small text-default-500 flex items-center gap-1">
-                                  <span className="flex-shrink-0">{udpStun ? "探测地址" : "目标地址"}</span>
+                                  <span className="flex-shrink-0">{udpProbe ? "探测地址" : "目标地址"}</span>
                                   <code className="font-mono truncate min-w-0" title={address}>{address}</code>
                                 </div>
                                 {!result.success && (

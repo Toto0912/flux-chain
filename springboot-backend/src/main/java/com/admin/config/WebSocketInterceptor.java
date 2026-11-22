@@ -54,6 +54,7 @@ public class WebSocketInterceptor extends HttpSessionHandshakeInterceptor {
             attributes.put("udpStunProbe", "1".equals(serverHttpRequest.getServletRequest().getParameter("udpStunProbe")));
             attributes.put("udpEchoProbe", "1".equals(serverHttpRequest.getServletRequest().getParameter("udpEchoProbe")));
             attributes.put("forwardUdpStun", "1".equals(serverHttpRequest.getServletRequest().getParameter("forwardUdpStun")));
+            attributes.put("forwardUdpEcho", "1".equals(serverHttpRequest.getServletRequest().getParameter("forwardUdpEcho")));
             attributes.put("forwardEgressStun", "1".equals(serverHttpRequest.getServletRequest().getParameter("forwardEgressStun")));
             attributes.put("forwardTargetHealth", "1".equals(serverHttpRequest.getServletRequest().getParameter("forwardTargetHealth")));
             attributes.put("http",http);

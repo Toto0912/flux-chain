@@ -572,6 +572,17 @@ public class GostUtil {
         return WebSocketServer.send_msg(nodeId, data, "ForwardUdpStun");
     }
 
+    public static GostDto ProbeForwardUdpEcho(Long nodeId, String target, String interfaceName, int timeoutMs) {
+        JSONObject data = new JSONObject();
+        data.put("mode", "udp_echo");
+        data.put("target", target);
+        data.put("timeout", timeoutMs);
+        if (StringUtils.isNotBlank(interfaceName)) {
+            data.put("interface", interfaceName);
+        }
+        return WebSocketServer.send_msg(nodeId, data, "ForwardUdpStun");
+    }
+
     public static GostDto ForwardTargetHealthStatus(Long nodeId, List<String> serviceNames) {
         JSONObject data = new JSONObject();
         data.put("services", serviceNames);

@@ -23,7 +23,7 @@ public class ForwardDto {
 
     private String strategy;
 
-    @Pattern(regexp = "tcp|udp_stun", message = "诊断方式仅支持 TCP 建连或 UDP STUN")
+    @Pattern(regexp = "tcp|udp_stun|udp_echo", message = "诊断方式仅支持 TCP 建连、UDP STUN 或 UDP 回显")
     private String probeMode;
 
     private ForwardTargetHealthConfig targetHealth;

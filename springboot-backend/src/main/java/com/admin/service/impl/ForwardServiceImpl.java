@@ -27,6 +27,8 @@ import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.LongSupplier;
 import java.util.stream.Collectors;
 
 /**
@@ -53,9 +55,13 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
     private static final int TUNNEL_STATUS_ACTIVE = 1;
     private static final String TCP_PROBE = "tcp";
     private static final String UDP_STUN = "udp_stun";
+    private static final String UDP_ECHO = "udp_echo";
     private static final String STUN_HOST = "stun.l.google.com";
     private static final int STUN_PORT = 19302;
+    private static final int UDP_ECHO_PORT = 19302;
     private static final int UDP_PROBE_TIMEOUT_MS = 3000;
+    private static final long USER_DIAGNOSE_COOLDOWN_MS = 5_000L;
+    private static final long DIAGNOSE_TIMEOUT_MS = 20_000L;
     private static final int MAX_FORWARD_TARGETS = 64;
     private static final int MAX_FORWARD_TARGET_CHARS = 20_480;
     // A slot is 1,000 units of worst-case work per second. Leave room below the node's 16 live probes.
@@ -63,6 +69,10 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
     private static final int USER_PROBE_LOAD_LIMIT = 6_000;
 
     private static final long BYTES_TO_GB = 1024L * 1024L * 1024L;
+
+    private final ConcurrentHashMap<Integer, Long> userDiagnoseCooldowns = new ConcurrentHashMap<>();
+    private final Set<Integer> activeUserDiagnoses = ConcurrentHashMap.newKeySet();
+    private LongSupplier clock = System::currentTimeMillis;
 
     @Resource
     @Lazy
@@ -463,68 +473,146 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
     public R diagnoseForward(Long id) {
         // 1. 获取当前用户信息
         UserInfo currentUser = getCurrentUserInfo();
+        boolean limitByUser = !Objects.equals(currentUser.getRoleId(), ADMIN_ROLE_ID) && currentUser.getUserId() != null;
+        Integer userId = currentUser.getUserId();
 
-        // 2. 检查转发是否存在且用户有权限访问
-        Forward forward = validateForwardExists(id, currentUser);
-        if (forward == null) {
-            return R.err("转发不存在");
-        }
-        boolean udpStun = UDP_STUN.equals(forward.getProbeMode());
-
-        // 3. 获取隧道信息
-        Tunnel tunnel = validateTunnel(forward.getTunnelId());
-        if (tunnel == null) {
-            return R.err("隧道不存在");
-        }
-
-        // 4. 获取入口节点信息
-        Node inNode = nodeService.getNodeById(tunnel.getInNodeId());
-        if (inNode == null) {
-            return R.err("入口节点不存在");
-        }
-
-
-        Node outNode = null;
-        if (tunnel.getType() != TUNNEL_TYPE_PORT_FORWARD) {
-            outNode = nodeService.getNodeById(tunnel.getOutNodeId());
-            if (outNode == null) {
-                return R.err("出口节点不存在");
+        if (limitByUser) {
+            if (!activeUserDiagnoses.add(userId)) {
+                return R.err("您有正在进行的诊断任务，请等待完成后再试");
             }
-        }
-
-        List<DiagnosisResult> results;
-        if (udpStun) {
-            results = outNode == null
-                    ? List.of(probeGoogleStun(inNode, forward.getInterfaceName(), "入口 → Google STUN"))
-                    : List.of(probeTunnelUdpLink(forward, tunnel, inNode, outNode),
-                            probeGoogleStun(outNode, forward.getInterfaceName(), "出口 → Google STUN"));
-        } else {
-            results = new ArrayList<>();
-            if (outNode != null) {
-                results.add(performTcpPingDiagnosis(inNode, outNode.getServerIp(), forward.getOutPort(), "入口->出口"));
-            }
-            Node targetSource = outNode == null ? inNode : outNode;
-            String description = outNode == null ? "转发->目标" : "出口->目标";
-            for (String remoteAddress : forward.getRemoteAddr().split(",")) {
-                String targetIp = extractIpFromAddress(remoteAddress);
-                int targetPort = extractPortFromAddress(remoteAddress);
-                if (targetIp == null || targetPort == -1) {
-                    return R.err("无法解析目标地址: " + remoteAddress);
+            long now = clock.getAsLong();
+            Long lastFinish = userDiagnoseCooldowns.get(userId);
+            if (lastFinish != null) {
+                long remainingMs = USER_DIAGNOSE_COOLDOWN_MS - (now - lastFinish);
+                if (remainingMs > 0) {
+                    activeUserDiagnoses.remove(userId);
+                    long waitSeconds = (remainingMs + 999L) / 1000L;
+                    return R.err("诊断操作过于频繁，请 " + waitSeconds + " 秒后再试");
                 }
-                results.add(performTcpPingDiagnosis(targetSource, targetIp, targetPort, description));
             }
         }
 
-        // 7. 构建诊断报告
-        Map<String, Object> diagnosisReport = new HashMap<>();
-        diagnosisReport.put("forwardId", id);
-        diagnosisReport.put("forwardName", forward.getName());
-        diagnosisReport.put("tunnelType", tunnel.getType() == TUNNEL_TYPE_PORT_FORWARD ? "端口转发" : "隧道转发");
-        diagnosisReport.put("probeMode", udpStun ? UDP_STUN : TCP_PROBE);
-        diagnosisReport.put("results", results);
-        diagnosisReport.put("timestamp", System.currentTimeMillis());
+        boolean ranDiagnosis = false;
+        try {
+            // 2. 检查转发是否存在且用户有权限访问
+            Forward forward = validateForwardExists(id, currentUser);
+            if (forward == null) {
+                return R.err("转发不存在");
+            }
+            boolean udpStun = UDP_STUN.equals(forward.getProbeMode());
+            boolean udpEcho = UDP_ECHO.equals(forward.getProbeMode());
 
-        return R.ok(diagnosisReport);
+            // 3. 获取隧道信息
+            Tunnel tunnel = validateTunnel(forward.getTunnelId());
+            if (tunnel == null) {
+                return R.err("隧道不存在");
+            }
+
+            // 4. 获取入口节点信息
+            Node inNode = nodeService.getNodeById(tunnel.getInNodeId());
+            if (inNode == null) {
+                return R.err("入口节点不存在");
+            }
+
+            Node outNode = null;
+            if (tunnel.getType() != TUNNEL_TYPE_PORT_FORWARD) {
+                outNode = nodeService.getNodeById(tunnel.getOutNodeId());
+                if (outNode == null) {
+                    return R.err("出口节点不存在");
+                }
+            }
+
+            List<String[]> parsedTargets = new ArrayList<>();
+            if (!udpStun) {
+                for (String remoteAddress : forward.getRemoteAddr().split(",")) {
+                    String targetIp = extractIpFromAddress(remoteAddress);
+                    int targetPort = extractPortFromAddress(remoteAddress);
+                    if (targetIp == null || targetPort == -1) {
+                        return R.err("无法解析目标地址: " + remoteAddress);
+                    }
+                    parsedTargets.add(new String[]{targetIp, String.valueOf(targetPort)});
+                }
+            }
+
+            ranDiagnosis = true;
+            long deadline = clock.getAsLong() + DIAGNOSE_TIMEOUT_MS;
+            boolean truncated = false;
+            int skippedCount = 0;
+
+            List<DiagnosisResult> results = new ArrayList<>();
+            if (udpStun) {
+                if (outNode == null) {
+                    results.add(probeGoogleStun(inNode, forward.getInterfaceName(), "入口 → Google STUN"));
+                } else {
+                    results.add(probeTunnelUdpLink(forward, tunnel, inNode, outNode));
+                    if (clock.getAsLong() >= deadline) {
+                        truncated = true;
+                        skippedCount++;
+                    } else {
+                        results.add(probeGoogleStun(outNode, forward.getInterfaceName(), "出口 → Google STUN"));
+                    }
+                }
+            } else if (udpEcho) {
+                if (outNode != null) {
+                    results.add(probeTunnelUdpLink(forward, tunnel, inNode, outNode));
+                }
+                Node targetSource = outNode == null ? inNode : outNode;
+                String description = outNode == null ? "入口 → 目标（UDP 回显）" : "出口 → 目标（UDP 回显）";
+                Set<String> seenHosts = new LinkedHashSet<>();
+                for (String[] target : parsedTargets) {
+                    seenHosts.add(target[0]);
+                }
+                for (String targetIp : seenHosts) {
+                    if (clock.getAsLong() >= deadline) {
+                        truncated = true;
+                        skippedCount++;
+                        continue;
+                    }
+                    results.add(probeUdpEcho(targetSource, targetIp, forward.getInterfaceName(), description));
+                }
+            } else {
+                if (outNode != null) {
+                    results.add(performTcpPingDiagnosis(inNode, outNode.getServerIp(), forward.getOutPort(), "入口->出口"));
+                }
+                Node targetSource = outNode == null ? inNode : outNode;
+                String description = outNode == null ? "转发->目标" : "出口->目标";
+                for (String[] target : parsedTargets) {
+                    if (clock.getAsLong() >= deadline) {
+                        truncated = true;
+                        skippedCount++;
+                        continue;
+                    }
+                    results.add(performTcpPingDiagnosis(targetSource, target[0], Integer.parseInt(target[1]), description));
+                }
+            }
+
+            // 7. 构建诊断报告
+            Map<String, Object> diagnosisReport = new HashMap<>();
+            diagnosisReport.put("forwardId", id);
+            diagnosisReport.put("forwardName", forward.getName());
+            diagnosisReport.put("tunnelType", tunnel.getType() == TUNNEL_TYPE_PORT_FORWARD ? "端口转发" : "隧道转发");
+            diagnosisReport.put("probeMode", udpStun ? UDP_STUN : udpEcho ? UDP_ECHO : TCP_PROBE);
+            diagnosisReport.put("results", results);
+            diagnosisReport.put("timestamp", clock.getAsLong());
+            if (truncated) {
+                String notice = "诊断总耗时超过 20 秒，已中断剩余 " + skippedCount + " 项探测，请稍后再试";
+                diagnosisReport.put("truncated", true);
+                diagnosisReport.put("warningMessage", notice);
+            }
+
+            return R.ok(diagnosisReport);
+        } finally {
+            if (limitByUser) {
+                if (ranDiagnosis) {
+                    long finishedAt = clock.getAsLong();
+                    if (userDiagnoseCooldowns.size() > 1000) {
+                        userDiagnoseCooldowns.entrySet().removeIf(entry -> finishedAt - entry.getValue() >= USER_DIAGNOSE_COOLDOWN_MS);
+                    }
+                    userDiagnoseCooldowns.put(userId, finishedAt);
+                }
+                activeUserDiagnoses.remove(userId);
+            }
+        }
     }
 
     @Override
@@ -663,6 +751,20 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
             return result;
         }
         GostDto response = GostUtil.ProbeForwardUdpStun(node.getId(), null, null, interfaceName, UDP_PROBE_TIMEOUT_MS);
+        applyUdpLatency(result, response, "latencyMs");
+        return result;
+    }
+
+    private DiagnosisResult probeUdpEcho(Node node, String targetHost, String interfaceName, String description) {
+        DiagnosisResult result = newUdpDiagnosis(node, targetHost, UDP_ECHO_PORT, description);
+        if (!WebSocketServer.supportsForwardUdpEcho(node.getId())) {
+            result.setMessage("节点 " + node.getName() + " 需要在线并升级到支持转发 UDP 回显探测的版本");
+            return result;
+        }
+        String targetAddress = targetHost.contains(":") && !targetHost.startsWith("[")
+                ? "[" + targetHost + "]:" + UDP_ECHO_PORT
+                : targetHost + ":" + UDP_ECHO_PORT;
+        GostDto response = GostUtil.ProbeForwardUdpEcho(node.getId(), targetAddress, interfaceName, UDP_PROBE_TIMEOUT_MS);
         applyUdpLatency(result, response, "latencyMs");
         return result;
     }

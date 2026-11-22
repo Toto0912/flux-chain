@@ -1135,7 +1135,7 @@ func StartWebSocketReporterWithConfig(addr string, secret string, http int, tls 
 	return reporter
 }
 
-const probeCapabilities = "&udpStunProbe=1&forwardUdpStun=1&forwardTargetHealth=1&udpEchoProbe=1&forwardEgressStun=1"
+const probeCapabilities = "&udpStunProbe=1&forwardUdpStun=1&forwardTargetHealth=1&udpEchoProbe=1&forwardEgressStun=1&forwardUdpEcho=1"
 
 func (w *WebSocketReporter) handleUdpStunProbe(data interface{}) (interface{}, error) {
 	var request struct {

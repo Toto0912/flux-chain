@@ -32,6 +32,7 @@ public class ForwardController extends BaseController {
     private final Semaphore configurationRequests = new Semaphore(16);
     private final Semaphore cleanupRequests = new Semaphore(8);
     private final Semaphore healthStatusRequests = new Semaphore(16);
+    private final Semaphore diagnosisRequests = new Semaphore(8);
 
     @LogAnnotation
     @PostMapping("/create")
@@ -88,7 +89,7 @@ public class ForwardController extends BaseController {
     @PostMapping("/diagnose")
     public R diagnoseForward(@RequestBody Map<String, Object> params) {
         Long forwardId = Long.valueOf(params.get("forwardId").toString());
-        return forwardService.diagnoseForward(forwardId);
+        return withPermit(diagnosisRequests, "当前诊断请求较多，系统繁忙，请稍后再试", () -> forwardService.diagnoseForward(forwardId));
     }
 
     @PostMapping("/target-health")

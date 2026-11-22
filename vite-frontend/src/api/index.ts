@@ -62,7 +62,7 @@ export const pauseForwardService = (forwardId: number) => Network.post("/forward
 export const resumeForwardService = (forwardId: number) => Network.post("/forward/resume", { id: forwardId });
 
 // 转发诊断操作
-export type ForwardProbeMode = "tcp" | "udp_stun";
+export type ForwardProbeMode = "tcp" | "udp_stun" | "udp_echo";
 export const diagnoseForward = (forwardId: number) => Network.post("/forward/diagnose", { forwardId });
 export const getForwardTargetHealth = (forwardId: number) => Network.post("/forward/target-health", { forwardId });
 

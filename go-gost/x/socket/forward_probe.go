@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"time"
 
 	"github.com/go-gost/core/chain"
@@ -44,6 +45,8 @@ func (w *WebSocketReporter) handleForwardUdpStun(data interface{}) (interface{},
 		Interface string `json:"interface"`
 		Timeout   int    `json:"timeout"`
 		LinkOnly  bool   `json:"linkOnly"`
+		Mode      string `json:"mode"`
+		Target    string `json:"target"`
 	}
 	payload, err := json.Marshal(data)
 	if err != nil {
@@ -53,6 +56,9 @@ func (w *WebSocketReporter) handleForwardUdpStun(data interface{}) (interface{},
 		return nil, err
 	}
 	if request.Timeout < 1000 || request.Timeout > int(stunprobe.MaxTimeout/time.Millisecond) {
+		if request.Mode == "udp_echo" {
+			return nil, errors.New("UDP 回显探测超时必须在 1 至 5 秒之间")
+		}
 		return nil, errors.New("UDP STUN 探测超时必须在 1 至 5 秒之间")
 	}
 	ctx, cancel := context.WithTimeout(w.ctx, time.Duration(request.Timeout)*time.Millisecond)
@@ -60,9 +66,25 @@ func (w *WebSocketReporter) handleForwardUdpStun(data interface{}) (interface{},
 
 	if request.Chain == "" {
 		router := xchain.NewRouter(chain.InterfaceRouterOption(request.Interface))
-		rtt, err := stunprobe.ProbeGoogle(ctx, func(ctx context.Context, address string) (net.Conn, error) {
+		dialUDP := func(ctx context.Context, address string) (net.Conn, error) {
 			return router.Dial(ctx, "udp", address)
-		})
+		}
+		if request.Mode == "udp_echo" {
+			host, portText, err := net.SplitHostPort(request.Target)
+			port, portErr := strconv.Atoi(portText)
+			if err != nil || host == "" || portErr != nil || port < 1 || port > 65535 {
+				return nil, errors.New("UDP 回显探测目标地址无效")
+			}
+			rtt, err := stunprobe.ProbeFixedEcho(ctx, request.Target, dialUDP)
+			if err != nil {
+				if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
+					return nil, errors.New("未收到目标服务器的 UDP 回显（19302/UDP 探测超时）")
+				}
+				return nil, fmt.Errorf("UDP 回显探测失败：%w", err)
+			}
+			return map[string]float64{"latencyMs": durationMilliseconds(rtt)}, nil
+		}
+		rtt, err := stunprobe.ProbeGoogle(ctx, dialUDP)
 		if err != nil {
 			if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
 				return nil, errors.New("未收到 Google STUN 应答（探测超时）")
