@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-gost/core/chain"
 	xchain "github.com/go-gost/x/chain"
+	"github.com/go-gost/x/internal/util/forwardhealth"
 	"github.com/go-gost/x/internal/util/stunprobe"
 	"github.com/go-gost/x/registry"
 )
@@ -102,4 +103,48 @@ func (w *WebSocketReporter) handleForwardUdpStun(data interface{}) (interface{},
 
 func durationMilliseconds(duration time.Duration) float64 {
 	return float64(duration) / float64(time.Millisecond)
+}
+
+func forwardTargetHealthStatus(data interface{}) (interface{}, error) {
+	var request struct {
+		Services      []string `json:"services"`
+		LargeResponse bool     `json:"largeResponse"`
+	}
+	payload, err := json.Marshal(data)
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(payload, &request); err != nil {
+		return nil, err
+	}
+	if len(request.Services) == 0 || len(request.Services) > 2 {
+		return nil, errors.New("无效的转发服务列表")
+	}
+	result := make(map[string]forwardhealth.Snapshot)
+	for _, name := range request.Services {
+		service := registry.ServiceRegistry().Get(name)
+		if monitored, ok := service.(interface {
+			TargetHealthStatus() map[string]forwardhealth.Snapshot
+		}); ok {
+			for protocol, state := range monitored.TargetHealthStatus() {
+				result[protocol] = state
+			}
+		}
+	}
+	if len(result) == 0 {
+		return nil, errors.New("节点尚未运行该转发的目标健康检查")
+	}
+	// Leave room for the command envelope and base64-encoded encryption.
+	limit := 5 * 1024
+	if request.LargeResponse {
+		limit = 160 * 1024
+	}
+	snapshot, err := json.Marshal(result)
+	if err != nil {
+		return nil, err
+	}
+	if len(snapshot) > limit {
+		return nil, errors.New("探测结果过大，请减少转发目标后再查看")
+	}
+	return json.RawMessage(snapshot), nil
 }

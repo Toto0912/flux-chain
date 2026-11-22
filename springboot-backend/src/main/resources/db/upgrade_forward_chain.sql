@@ -71,6 +71,16 @@ PREPARE forward_probe_stmt FROM @forward_probe_migration;
 EXECUTE forward_probe_stmt;
 DEALLOCATE PREPARE forward_probe_stmt;
 
+SET @forward_health_migration = IF(
+  EXISTS (SELECT 1 FROM information_schema.COLUMNS
+          WHERE table_schema = DATABASE() AND table_name = 'forward' AND column_name = 'target_health_config'),
+  'SELECT 1',
+  'ALTER TABLE `forward` ADD COLUMN `target_health_config` longtext NULL'
+);
+PREPARE forward_health_stmt FROM @forward_health_migration;
+EXECUTE forward_health_stmt;
+DEALLOCATE PREPARE forward_health_stmt;
+
 -- FluxChain：仅替换旧项目默认名称，保留自定义的网站名称。
 UPDATE `vite_config` SET `value` = 'FluxChain'
 WHERE `name` = 'app_name' AND BINARY `value` IN ('flux', 'flux-panel');

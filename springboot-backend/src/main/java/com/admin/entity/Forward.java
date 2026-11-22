@@ -38,6 +38,8 @@ public class Forward extends BaseEntity{
 
     private String probeMode;
 
+    private String targetHealthConfig;
+
     private Long inFlow;
 
     private Long outFlow;

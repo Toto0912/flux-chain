@@ -31,6 +31,8 @@ public class ForwardUpdateDto {
 
     @Pattern(regexp = "tcp|udp_stun", message = "诊断方式仅支持 TCP 建连或 UDP STUN")
     private String probeMode;
+
+    private ForwardTargetHealthConfig targetHealth;
     
     /**
      * 入口端口（可选，为空时自动分配）

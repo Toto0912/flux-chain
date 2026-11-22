@@ -27,6 +27,7 @@ import java.util.UUID;
 
 @Slf4j
 public class WebSocketServer extends TextWebSocketHandler {
+    private static final int NODE_TEXT_MESSAGE_LIMIT = 256 * 1024;
 
     @Resource
     NodeService nodeService;
@@ -76,17 +77,19 @@ public class WebSocketServer extends TextWebSocketHandler {
                 // 尝试解密消息
                 String decryptedPayload = decryptMessageIfNeeded(message.getPayload(), nodeSecret);
 
-                if (decryptedPayload.contains("memory_usage")){
+                JSONObject envelope = JSONObject.parseObject(decryptedPayload);
+                if (envelope != null && envelope.containsKey("memory_usage")) {
                     // 先发送确认消息
                     sendToUser(session, "{\"type\":\"call\"}", nodeSecret);
-                }else if (decryptedPayload.contains("requestId")) {
+                } else if (envelope != null && envelope.getString("requestId") != null) {
                     // 处理命令响应消息
                     try {
-                        JSONObject responseJson = JSONObject.parseObject(decryptedPayload);
+                        JSONObject responseJson = envelope;
                         String requestId = responseJson.getString("requestId");
                         String responseMessage = responseJson.getString("message");
                         String responseType = responseJson.getString("type");
-                        if (!"PrepareForwardUdpStunResponse".equals(responseType)) {
+                        if (!"PrepareForwardUdpStunResponse".equals(responseType) &&
+                                !"ForwardTargetHealthStatusResponse".equals(responseType)) {
                             log.debug("收到消息: {}", decryptedPayload);
                         }
                         JSONObject responseData = responseJson.getJSONObject("data");
@@ -114,6 +117,7 @@ public class WebSocketServer extends TextWebSocketHandler {
                                 future.complete(result);
                             }
                         }
+                        if ("ForwardTargetHealthStatusResponse".equals(responseType)) return;
                     } catch (Exception e) {
                         log.info("处理响应消息失败: {}", e.getMessage(), e);
                     }
@@ -225,6 +229,7 @@ public class WebSocketServer extends TextWebSocketHandler {
                 log.info("管理员连接建立，sessionId: {}", session.getId());
             } else {
                 // 客户端节点连接
+                session.setTextMessageSizeLimit(NODE_TEXT_MESSAGE_LIMIT);
                 Long nodeId = Long.valueOf(id);
                 String version = (String) session.getAttributes().get("nodeVersion");
                 String http = (String) session.getAttributes().get("http");
@@ -442,8 +447,20 @@ public class WebSocketServer extends TextWebSocketHandler {
         return supportsProbe(nodeId, "udpStunProbe");
     }
 
+    public static boolean supportsUdpEchoProbe(Long nodeId) {
+        return supportsProbe(nodeId, "udpEchoProbe");
+    }
+
     public static boolean supportsForwardUdpStun(Long nodeId) {
         return supportsProbe(nodeId, "forwardUdpStun");
+    }
+
+    public static boolean supportsForwardEgressStun(Long nodeId) {
+        return supportsProbe(nodeId, "forwardEgressStun");
+    }
+
+    public static boolean supportsForwardTargetHealth(Long nodeId) {
+        return supportsProbe(nodeId, "forwardTargetHealth");
     }
 
     private static boolean supportsProbe(Long nodeId, String capability) {

@@ -1,6 +1,7 @@
 package com.admin.service.impl;
 
 import com.admin.common.dto.ForwardDto;
+import com.admin.common.dto.ForwardTargetHealthConfig;
 import com.admin.common.annotation.SerializeNodePorts;
 import com.admin.common.dto.ForwardUpdateDto;
 import com.admin.common.dto.ForwardWithTunnelDto;
@@ -15,6 +16,7 @@ import com.admin.mapper.ForwardMapper;
 import com.admin.service.*;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
@@ -54,6 +56,11 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
     private static final String STUN_HOST = "stun.l.google.com";
     private static final int STUN_PORT = 19302;
     private static final int UDP_PROBE_TIMEOUT_MS = 3000;
+    private static final int MAX_FORWARD_TARGETS = 64;
+    private static final int MAX_FORWARD_TARGET_CHARS = 20_480;
+    // A slot is 1,000 units of worst-case work per second. Leave room below the node's 16 live probes.
+    private static final int NODE_PROBE_LOAD_LIMIT = 12_000;
+    private static final int USER_PROBE_LOAD_LIMIT = 6_000;
 
     private static final long BYTES_TO_GB = 1024L * 1024L * 1024L;
 
@@ -94,6 +101,8 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         if (permissionResult.isHasError()) {
             return R.err(permissionResult.getErrorMessage());
         }
+        String targetError = targetListLimitError(forwardDto.getRemoteAddr(), null);
+        if (targetError != null) return R.err(targetError);
 
         // 4. 分配端口
         PortAllocation portAllocation = allocatePorts(tunnel, forwardDto.getInPort(), null, forwardDto.getRemoteAddr());
@@ -101,17 +110,15 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
             return R.err(portAllocation.getErrorMessage());
         }
 
-        // 5. 创建并保存Forward对象
+        // 5. 在写库及下发节点配置前检查探测容量。
         Forward forward = createForwardEntity(forwardDto, currentUser, portAllocation);
+        NodeInfo nodeInfo = getRequiredNodes(tunnel);
+        String nodeError = nodeInfo.isHasError() ? nodeInfo.getErrorMessage() : targetHealthNodeError(forward, nodeInfo);
+        if (nodeError != null) return R.err(nodeError);
+        String capacityError = targetHealthCapacityError(forward, tunnel, null);
+        if (capacityError != null) return R.err(capacityError);
         if (!this.save(forward)) {
             return R.err("端口转发创建失败");
-        }
-
-        // 6. 获取所需的节点信息
-        NodeInfo nodeInfo = getRequiredNodes(tunnel);
-        if (nodeInfo.isHasError()) {
-            this.removeById(forward.getId());
-            return R.err(nodeInfo.getErrorMessage());
         }
 
         // 7. 调用Gost服务创建转发
@@ -227,13 +234,18 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         }
 
         // 6. 更新Forward对象
+        String targetError = targetListLimitError(forwardUpdateDto.getRemoteAddr(), existForward.getRemoteAddr());
+        if (targetError != null) return R.err(targetError);
         Forward updatedForward = updateForwardEntity(forwardUpdateDto, existForward, tunnel);
 
         // 7. 获取所需的节点信息
         NodeInfo nodeInfo = getRequiredNodes(tunnel);
-        if (nodeInfo.isHasError()) {
-            return R.err(nodeInfo.getErrorMessage());
+        String nodeError = nodeInfo.isHasError() ? nodeInfo.getErrorMessage() : targetHealthNodeError(updatedForward, nodeInfo);
+        if (nodeError != null) {
+            return R.err(nodeError);
         }
+        String capacityError = targetHealthCapacityError(updatedForward, tunnel, existForward);
+        if (capacityError != null) return R.err(capacityError);
 
         // 8. 调用Gost服务更新转发
         R gostResult;
@@ -306,13 +318,15 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
     }
 
     @Override
+    @SerializeNodePorts
     public R pauseForward(Long id) {
-        return changeForwardStatus(id, FORWARD_STATUS_PAUSED, "暂停", "PauseService");
+        return changeForwardStatus(id, FORWARD_STATUS_PAUSED, "暂停");
     }
 
     @Override
+    @SerializeNodePorts
     public R resumeForward(Long id) {
-        return changeForwardStatus(id, FORWARD_STATUS_ACTIVE, "恢复", "ResumeService");
+        return changeForwardStatus(id, FORWARD_STATUS_ACTIVE, "恢复");
     }
 
     @Override
@@ -325,6 +339,9 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         Forward forward = validateForwardExists(id, currentUser);
         if (forward == null) {
             return R.err("端口转发不存在");
+        }
+        if (currentUser.getRoleId() != ADMIN_ROLE_ID && mayBeRunningHealthChecks(forward)) {
+            return R.err("请先暂停或正常删除启用了目标健康检查的转发。节点不可用时，请联系管理员处理");
         }
 
         // 3. 直接删除转发记录，跳过GOST服务删除
@@ -339,7 +356,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
     /**
      * 改变转发状态（暂停/恢复）
      */
-    private R changeForwardStatus(Long id, int targetStatus, String operation, String gostMethod) {
+    private R changeForwardStatus(Long id, int targetStatus, String operation) {
         // 1. 获取当前用户信息
         UserInfo currentUser = getCurrentUserInfo();
 
@@ -406,35 +423,32 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         if (nodeInfo.isHasError()) {
             return R.err(nodeInfo.getErrorMessage());
         }
+        if (targetStatus == FORWARD_STATUS_ACTIVE) {
+            String nodeError = targetHealthNodeError(forward, nodeInfo);
+            if (nodeError != null) return R.err(nodeError);
+            String capacityError = targetHealthCapacityError(forward, tunnel, forward);
+            if (capacityError != null) return R.err(capacityError);
+        }
 
         // 8. 调用Gost服务
         String serviceName = buildServiceName(forward.getId(), forward.getUserId(), userTunnel);
-        GostDto gostResult;
-
-        if ("PauseService".equals(gostMethod)) {
-            gostResult = GostUtil.PauseService(nodeInfo.getInNode().getId(), serviceName);
-
-            // 隧道转发需要同时暂停远端服务
-            if (tunnel.getType() == TUNNEL_TYPE_TUNNEL_FORWARD && nodeInfo.getOutNode() != null) {
-                GostDto remoteResult = GostUtil.PauseRemoteService(nodeInfo.getOutNode().getId(), serviceName);
-                if (!isGostOperationSuccess(remoteResult)) {
-                    return R.err(operation + "远端服务失败：" + remoteResult.getMsg());
-                }
-            }
-        } else {
-            gostResult = GostUtil.ResumeService(nodeInfo.getInNode().getId(), serviceName);
-
-            // 隧道转发需要同时恢复远端服务
-            if (tunnel.getType() == TUNNEL_TYPE_TUNNEL_FORWARD && nodeInfo.getOutNode() != null) {
-                GostDto remoteResult = GostUtil.ResumeRemoteService(nodeInfo.getOutNode().getId(), serviceName);
-                if (!isGostOperationSuccess(remoteResult)) {
-                    return R.err(operation + "远端服务失败：" + remoteResult.getMsg());
-                }
-            }
-        }
-
+        boolean pause = targetStatus == FORWARD_STATUS_PAUSED;
+        Long entryId = nodeInfo.getInNode().getId();
+        GostDto gostResult = pause ? GostUtil.PauseService(entryId, serviceName) : GostUtil.ResumeService(entryId, serviceName);
         if (!isGostOperationSuccess(gostResult)) {
+            if (!pause && nodeInfo.getOutNode() == null && targetHealthLoad(forward) > 0) {
+                updateForwardStatusToError(forward);
+            }
             return R.err(operation + "服务失败：" + gostResult.getMsg());
+        }
+        if (nodeInfo.getOutNode() != null) {
+            Long exitId = nodeInfo.getOutNode().getId();
+            GostDto remoteResult = pause ? GostUtil.PauseRemoteService(exitId, serviceName)
+                    : GostUtil.ResumeRemoteService(exitId, serviceName);
+            if (!isGostOperationSuccess(remoteResult)) {
+                if (!pause && targetHealthLoad(forward) > 0) updateForwardStatusToError(forward);
+                return R.err(operation + "远端服务失败：" + remoteResult.getMsg());
+            }
         }
 
         // 9. 更新转发状态
@@ -511,6 +525,104 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         diagnosisReport.put("timestamp", System.currentTimeMillis());
 
         return R.ok(diagnosisReport);
+    }
+
+    @Override
+    public R getTargetHealth(Long id) {
+        Forward forward = validateForwardExists(id, getCurrentUserInfo());
+        if (forward == null) return R.err("转发不存在");
+        if (ForwardTargetHealthConfig.read(forward.getTargetHealthConfig()) == null) {
+            return R.err("该转发未启用目标健康检查");
+        }
+        if (!Objects.equals(forward.getStatus(), FORWARD_STATUS_ACTIVE)) {
+            return R.err("转发需要运行中才能查看目标探测结果");
+        }
+        Tunnel tunnel = validateTunnel(forward.getTunnelId());
+        if (tunnel == null) return R.err("隧道不存在");
+        NodeInfo nodes = getRequiredNodes(tunnel);
+        if (nodes.isHasError()) return R.err(nodes.getErrorMessage());
+        String nodeError = targetHealthNodeError(forward, nodes);
+        if (nodeError != null) return R.err(nodeError);
+
+        UserTunnel userTunnel = getUserTunnel(forward.getUserId(), forward.getTunnelId());
+        String name = buildServiceName(forward.getId(), forward.getUserId(), userTunnel);
+        boolean direct = nodes.getOutNode() == null;
+        Node node = direct ? nodes.getInNode() : nodes.getOutNode();
+        List<String> services = direct ? List.of(name + "_tcp", name + "_udp") : List.of(name + "_tls");
+        GostDto response = GostUtil.ForwardTargetHealthStatus(node.getId(), services);
+        JSONObject data = udpProbeData(response);
+        return data == null ? R.err(udpProbeError(response)) :
+                R.ok(Map.of("nodeName", node.getName(), "protocols", data));
+    }
+
+    private String targetHealthNodeError(Forward forward, NodeInfo nodes) {
+        ForwardTargetHealthConfig settings = ForwardTargetHealthConfig.read(forward.getTargetHealthConfig());
+        if (settings == null) return null;
+        Node node = nodes.getOutNode() == null ? nodes.getInNode() : nodes.getOutNode();
+        if (ForwardTargetHealthConfig.GOOGLE_STUN.equals(settings.getUdpMode()) &&
+                !WebSocketServer.supportsForwardEgressStun(node.getId())) {
+            return "节点 " + node.getName() + " 需要在线并升级到支持出口 STUN 探测的版本";
+        }
+        if (ForwardTargetHealthConfig.FIXED_ECHO.equals(settings.getUdpMode()) &&
+                !WebSocketServer.supportsUdpEchoProbe(node.getId())) {
+            return "节点 " + node.getName() + " 需要在线并升级到支持 UDP 回显的版本";
+        }
+        return WebSocketServer.supportsForwardTargetHealth(node.getId()) ? null :
+                "节点 " + node.getName() + " 需要在线并升级到支持目标健康检查的版本";
+    }
+
+    private static String targetListLimitError(String destinations, String previous) {
+        if (destinations.length() > MAX_FORWARD_TARGET_CHARS &&
+                (previous == null || destinations.length() > previous.length())) {
+            return "转发目标地址列表过长，最多允许 " + MAX_FORWARD_TARGET_CHARS + " 个字符";
+        }
+        long separators = destinations.chars().filter(character -> character == ',').count();
+        if (separators >= MAX_FORWARD_TARGETS &&
+                (previous == null || separators > previous.chars().filter(character -> character == ',').count())) {
+            return "每条转发最多允许 " + MAX_FORWARD_TARGETS + " 个目标地址";
+        }
+        return null;
+    }
+
+    // Called under the configuration lock, so simultaneous requests cannot reserve the same capacity.
+    private String targetHealthCapacityError(Forward forward, Tunnel tunnel, Forward previous) {
+        long requested = targetHealthLoad(forward);
+        if (requested == 0) return null;
+        Long nodeId = targetHealthNodeId(tunnel);
+        Long excludedId = previous == null ? null : previous.getId();
+        if (previous != null && Objects.equals(previous.getStatus(), FORWARD_STATUS_ACTIVE)) {
+            Tunnel previousTunnel = Objects.equals(previous.getTunnelId(), forward.getTunnelId())
+                    ? tunnel : validateTunnel(previous.getTunnelId());
+            if (previousTunnel != null && Objects.equals(nodeId, targetHealthNodeId(previousTunnel)) &&
+                    requested <= targetHealthLoad(previous)) return null;
+        }
+        long nodeLoad = requested;
+        long userLoad = requested;
+        for (Forward reserved : baseMapper.selectReservedTargetHealthForNode(nodeId, excludedId)) {
+            long load = targetHealthLoad(reserved);
+            nodeLoad += load;
+            if (Objects.equals(reserved.getUserId(), forward.getUserId())) userLoad += load;
+        }
+        if (userLoad > USER_PROBE_LOAD_LIMIT) {
+            return "该用户在探测节点上的健康检查负载已达上限，请延长探测间隔或减少探测目标";
+        }
+        if (nodeLoad > NODE_PROBE_LOAD_LIMIT) {
+            return "探测节点的健康检查负载已达上限，请延长探测间隔或减少探测目标";
+        }
+        return null;
+    }
+
+    private static Long targetHealthNodeId(Tunnel tunnel) {
+        return tunnel.getType() == TUNNEL_TYPE_TUNNEL_FORWARD ? tunnel.getOutNodeId() : tunnel.getInNodeId();
+    }
+
+    private static long targetHealthLoad(Forward forward) {
+        ForwardTargetHealthConfig settings = ForwardTargetHealthConfig.read(forward.getTargetHealthConfig());
+        return settings == null ? 0 : settings.probeLoad(forward.getRemoteAddr());
+    }
+
+    private static boolean mayBeRunningHealthChecks(Forward forward) {
+        return !Objects.equals(forward.getStatus(), FORWARD_STATUS_PAUSED) && targetHealthLoad(forward) > 0;
     }
 
     private DiagnosisResult probeTunnelUdpLink(Forward forward, Tunnel tunnel, Node inNode, Node outNode) {
@@ -1023,6 +1135,9 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         // 先复制DTO的属性，再设置其他属性，避免被覆盖
         BeanUtils.copyProperties(forwardDto, forward);
         forward.setProbeMode(Objects.toString(forwardDto.getProbeMode(), TCP_PROBE));
+        ForwardTargetHealthConfig health = ForwardTargetHealthConfig.validate(
+                forwardDto.getTargetHealth(), forward.getRemoteAddr(), forward.getStrategy());
+        if (health != null) forward.setTargetHealthConfig(JSON.toJSONString(health));
         forward.setStatus(FORWARD_STATUS_ACTIVE);
         forward.setInPort(portAllocation.getInPort());
         forward.setOutPort(portAllocation.getOutPort());
@@ -1039,8 +1154,22 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
     private Forward updateForwardEntity(ForwardUpdateDto forwardUpdateDto, Forward existForward, Tunnel tunnel) {
         Forward forward = new Forward();
         BeanUtils.copyProperties(forwardUpdateDto, forward);
+        forward.setUserId(existForward.getUserId());
         if (forwardUpdateDto.getProbeMode() == null) {
             forward.setProbeMode(existForward.getProbeMode());
+        }
+        if (forwardUpdateDto.getStrategy() == null) {
+            forward.setStrategy(existForward.getStrategy());
+        }
+        ForwardTargetHealthConfig requested = forwardUpdateDto.getTargetHealth();
+        if (requested == null && ForwardTargetHealthConfig.targetList(forward.getRemoteAddr()).size() > 1) {
+            requested = ForwardTargetHealthConfig.read(existForward.getTargetHealthConfig());
+        }
+        ForwardTargetHealthConfig health = ForwardTargetHealthConfig.validate(requested, forward.getRemoteAddr(), forward.getStrategy());
+        if (health != null) {
+            forward.setTargetHealthConfig(JSON.toJSONString(health));
+        } else if (existForward.getTargetHealthConfig() != null) {
+            forward.setTargetHealthConfig("");
         }
 
         // 处理端口分配逻辑
@@ -1167,8 +1296,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         // 2. 删除原有的Gost服务配置
         R deleteResult = deleteOldGostServices(existForward, oldTunnel);
         if (deleteResult.getCode() != 0) {
-            // 删除失败时记录日志，但不影响后续创建（可能原配置已不存在）
-            log.info("删除原隧道{}的Gost配置失败: {}", oldTunnel.getId(), deleteResult.getMsg());
+            return deleteResult;
         }
 
         // 3. 创建新的Gost服务配置
@@ -1191,11 +1319,16 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
 
         // 获取原隧道的节点信息
         NodeInfo oldNodeInfo = getRequiredNodes(oldTunnel);
+        boolean requireProbeCleanup = mayBeRunningHealthChecks(forward);
+        if (requireProbeCleanup && oldNodeInfo.isHasError()) return R.err(oldNodeInfo.getErrorMessage());
 
         // 删除主服务（使用原隧道的入口节点）
         if (!oldNodeInfo.isHasError() && oldNodeInfo.getInNode() != null) {
             GostDto serviceResult = GostUtil.DeleteService(oldNodeInfo.getInNode().getId(), serviceName);
             if (!isGostOperationSuccess(serviceResult)) {
+                if (requireProbeCleanup && oldTunnel.getType() == TUNNEL_TYPE_PORT_FORWARD) {
+                    return R.err("原探测节点上的服务未能删除：" + serviceResult.getMsg());
+                }
                 log.info("删除主服务失败: {}", serviceResult.getMsg());
             }
         }
@@ -1222,6 +1355,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
             if (outNode != null) {
                 GostDto remoteResult = GostUtil.DeleteRemoteService(outNode.getId(), serviceName);
                 if (!isGostOperationSuccess(remoteResult)) {
+                    if (requireProbeCleanup) return R.err("原探测节点上的服务未能删除：" + remoteResult.getMsg());
                     log.info("删除远程服务失败: {}", remoteResult.getMsg());
                 }
             }
@@ -1276,7 +1410,8 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
      * 创建远程服务
      */
     private R createRemoteService(Node outNode, String serviceName, Forward forward, String protocol, String interfaceName) {
-        GostDto result = GostUtil.AddRemoteService(outNode.getId(), serviceName, forward.getOutPort(), forward.getRemoteAddr(), protocol, forward.getStrategy(), interfaceName);
+        GostDto result = GostUtil.AddRemoteService(outNode.getId(), serviceName, forward.getOutPort(), forward.getRemoteAddr(),
+                protocol, forward.getStrategy(), interfaceName, forward.getTargetHealthConfig());
         return isGostOperationSuccess(result) ? R.ok() : R.err(result.getMsg());
     }
 
@@ -1284,7 +1419,8 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
      * 创建主服务
      */
     private R createMainService(Node inNode, String serviceName, Forward forward, Integer limiter, Integer tunnelType, Tunnel tunnel, String strategy, String interfaceName) {
-        GostDto result = GostUtil.AddService(inNode.getId(), serviceName, forward.getInPort(), limiter, forward.getRemoteAddr(), tunnelType, tunnel, strategy, interfaceName);
+        GostDto result = GostUtil.AddService(inNode.getId(), serviceName, forward.getInPort(), limiter, forward.getRemoteAddr(),
+                tunnelType, tunnel, strategy, interfaceName, forward.getTargetHealthConfig());
         return isGostOperationSuccess(result) ? R.ok() : R.err(result.getMsg());
     }
 
@@ -1309,9 +1445,11 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
      */
     private R updateRemoteService(Node outNode, String serviceName, Forward forward, String protocol, String interfaceName) {
         // 创建新远程服务
-        GostDto createResult = GostUtil.UpdateRemoteService(outNode.getId(), serviceName, forward.getOutPort(), forward.getRemoteAddr(), protocol, forward.getStrategy(), interfaceName);
+        GostDto createResult = GostUtil.UpdateRemoteService(outNode.getId(), serviceName, forward.getOutPort(), forward.getRemoteAddr(),
+                protocol, forward.getStrategy(), interfaceName, forward.getTargetHealthConfig());
         if (createResult.getMsg().contains(GOST_NOT_FOUND_MSG)) {
-            createResult = GostUtil.AddRemoteService(outNode.getId(), serviceName, forward.getOutPort(), forward.getRemoteAddr(), protocol, forward.getStrategy(), interfaceName);
+            createResult = GostUtil.AddRemoteService(outNode.getId(), serviceName, forward.getOutPort(), forward.getRemoteAddr(),
+                    protocol, forward.getStrategy(), interfaceName, forward.getTargetHealthConfig());
         }
         return isGostOperationSuccess(createResult) ? R.ok() : R.err(createResult.getMsg());
     }
@@ -1320,10 +1458,12 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
      * 更新主服务
      */
     private R updateMainService(Node inNode, String serviceName, Forward forward, Integer limiter, Integer tunnelType, Tunnel tunnel, String strategy, String interfaceName) {
-        GostDto result = GostUtil.UpdateService(inNode.getId(), serviceName, forward.getInPort(), limiter, forward.getRemoteAddr(), tunnelType, tunnel, strategy, interfaceName);
+        GostDto result = GostUtil.UpdateService(inNode.getId(), serviceName, forward.getInPort(), limiter, forward.getRemoteAddr(),
+                tunnelType, tunnel, strategy, interfaceName, forward.getTargetHealthConfig());
 
         if (result.getMsg().contains(GOST_NOT_FOUND_MSG)) {
-            result = GostUtil.AddService(inNode.getId(), serviceName, forward.getInPort(), limiter, forward.getRemoteAddr(), tunnelType, tunnel, strategy, interfaceName);
+            result = GostUtil.AddService(inNode.getId(), serviceName, forward.getInPort(), limiter, forward.getRemoteAddr(),
+                    tunnelType, tunnel, strategy, interfaceName, forward.getTargetHealthConfig());
         }
 
         return isGostOperationSuccess(result) ? R.ok() : R.err(result.getMsg());

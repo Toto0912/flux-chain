@@ -29,6 +29,8 @@ import (
 	hop_parser "github.com/go-gost/x/config/parsing/hop"
 	logger_parser "github.com/go-gost/x/config/parsing/logger"
 	selector_parser "github.com/go-gost/x/config/parsing/selector"
+	xhop "github.com/go-gost/x/hop"
+	"github.com/go-gost/x/internal/util/forwardhealth"
 	tls_util "github.com/go-gost/x/internal/util/tls"
 	cache_limiter "github.com/go-gost/x/limiter/traffic/cache"
 	"github.com/go-gost/x/metadata"
@@ -310,10 +312,11 @@ func ParseService(cfg *config.ServiceConfig) (service.Service, error) {
 		)
 	}
 
+	router := xchain.NewRouter(routerOpts...)
 	var h handler.Handler
 	if rf := registry.HandlerRegistry().Get(cfg.Handler.Type); rf != nil {
 		h = rf(
-			handler.RouterOption(xchain.NewRouter(routerOpts...)),
+			handler.RouterOption(router),
 			handler.AutherOption(auther),
 			handler.AuthOption(auth_parser.Info(cfg.Handler.Auth)),
 			handler.BypassOption(xbypass.BypassGroup(bypass_parser.List(cfg.Bypass, cfg.Bypasses...)...)),
@@ -330,9 +333,23 @@ func ParseService(cfg *config.ServiceConfig) (service.Service, error) {
 		return nil, fmt.Errorf("unknown handler: %s", cfg.Handler.Type)
 	}
 
+	var health *forwardhealth.Monitor
 	if forwarder, ok := h.(handler.Forwarder); ok {
-		hop, err := parseForwarder(cfg.Forwarder, log)
+		var err error
+		if fwd := cfg.Forwarder; fwd != nil && fwd.TargetHealth != nil {
+			strategy := "round"
+			if fwd.Selector != nil {
+				strategy = fwd.Selector.Strategy
+			}
+			health, err = forwardhealth.New(fwd.TargetHealth, fwd.Nodes, strategy, cfg.Handler.Type, router.Dial)
+			if err != nil {
+				ln.Close()
+				return nil, err
+			}
+		}
+		hop, err := parseForwarder(cfg.Forwarder, log, health)
 		if err != nil {
+			ln.Close()
 			return nil, err
 		}
 		forwarder.Forward(hop)
@@ -368,13 +385,14 @@ func ParseService(cfg *config.ServiceConfig) (service.Service, error) {
 		xservice.ObserverOption(observer),
 		xservice.ObserverPeriodOption(observerPeriod),
 		xservice.LoggerOption(serviceLogger),
+		xservice.TargetHealthOption(health),
 	)
 
 	serviceLogger.Infof("listening on %s/%s", s.Addr().String(), s.Addr().Network())
 	return s, nil
 }
 
-func parseForwarder(cfg *config.ForwarderConfig, log logger.Logger) (hop.Hop, error) {
+func parseForwarder(cfg *config.ForwarderConfig, log logger.Logger, health *forwardhealth.Monitor) (hop.Hop, error) {
 	if cfg == nil {
 		return nil, nil
 	}
@@ -429,7 +447,7 @@ func parseForwarder(cfg *config.ForwarderConfig, log logger.Logger) (hop.Hop, er
 			Metadata: node.Metadata,
 		})
 	}
-	return hop_parser.ParseHop(&hc, log)
+	return hop_parser.ParseHop(&hc, log, xhop.TargetHealthOption(health))
 }
 
 func chainGroup(name string, group *config.ChainGroupConfig) chain.Chainer {

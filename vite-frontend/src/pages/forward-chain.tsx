@@ -13,12 +13,13 @@ import { arrayMove, rectSortingStrategy, SortableContext, sortableKeyboardCoordi
 import { CSS } from "@dnd-kit/utilities";
 import toast from "react-hot-toast";
 import { createForwardChain, deleteForwardChain, getForwardChainList, getNodeList, requestForwardChainProbe, setForwardChainStatus, updateForwardChain, updateForwardChainOrder, type ForwardChainProbeStatus } from "@/api";
+import { UDP_ECHO_PORT, UdpEchoInstall } from "@/components/udp-echo-install";
 
 type NodeItem = { id: number; name: string; serverIp: string; status: number; portSta: number; portEnd: number };
 type HopForm = { nodeIds: number[] };
 type PathHop = { nodeName: string; port?: number };
 type ChainPath = { name: string; hops: PathHop[]; available: boolean; latencyMs?: number | null; error?: string | null };
-type ProbeMode = "tcp" | "udp_stun";
+type ProbeMode = "tcp" | "udp_stun" | "udp_echo";
 type ChainItem = {
   id: number;
   name: string;
@@ -48,7 +49,7 @@ const viewModeKey = "forwardChainViewMode";
 const MIN_PROBE_INTERVAL_SECONDS = 5;
 const emptyForm = (): ChainForm => ({ name: "", inNodeId: null, inPort: "", targetHost: "", targetPort: "", protocol: "tls", probeMode: "tcp", probeIntervalSeconds: "300", probeTimeoutSeconds: "3", switchThresholdMs: "1000", hops: [{ nodeIds: [] }, { nodeIds: [] }] });
 const stunTarget = "stun.l.google.com:19302";
-const latencyLabel = (ms: number, useStun: boolean) => `${Number(ms).toFixed(1)} ms${useStun ? " RTT" : ""}`;
+const latencyLabel = (ms: number, udp: boolean) => `${Number(ms).toFixed(1)} ms${udp ? " RTT" : ""}`;
 const parseJson = <T,>(raw: string | undefined, fallback: T): T => { try { return raw ? JSON.parse(raw) as T : fallback; } catch { return fallback; } };
 const nodeLabel = (node: NodeItem) => `${node.name} · ${node.serverIp}${node.status === 1 ? "" : "（离线）"}`;
 const pathLabel = (path: ChainPath) => path.hops.map(hop => `${hop.nodeName}${hop.port != null ? `:${hop.port}` : ""}`).join(" → ");
@@ -114,12 +115,15 @@ function ChainCard({ chain, entryNode, sortDisabled, requestingProbe, onEdit, on
     useSortable({ id: chain.id, disabled: sortDisabled });
   const paths = parseJson<ChainPath[]>(chain.pathsJson, []);
   const selected = paths[chain.selectedPathIndex];
-  const useStun = chain.probeMode === "udp_stun";
+  const udpProbe = chain.probeMode === "udp_stun" || chain.probeMode === "udp_echo";
+  const probeDescription = chain.probeMode === "udp_echo"
+    ? `UDP 回显往返延迟至 ${formatAddress(chain.targetHost, UDP_ECHO_PORT)}`
+    : chain.probeMode === "udp_stun" ? `UDP 往返延迟至 ${stunTarget}` : "TCP 建连耗时至业务目标";
   const running = chain.status === 1;
   const probeState = chain.manualProbe?.state;
   const probePending = probeState === "QUEUED" || probeState === "RUNNING";
   const flow = formatFlow((chain.inFlow || 0) + (chain.outFlow || 0));
-  const latency = selected?.available && selected.latencyMs != null ? latencyLabel(selected.latencyMs, useStun) : "—";
+  const latency = selected?.available && selected.latencyMs != null ? latencyLabel(selected.latencyMs, udpProbe) : "—";
 
   return (
     <article ref={setNodeRef} aria-label={chain.name} className={isDragging ? "relative z-10 min-w-0 opacity-80" : "min-w-0"}
@@ -155,11 +159,11 @@ function ChainCard({ chain, entryNode, sortDisabled, requestingProbe, onEdit, on
           <details className="min-w-0 border-t border-divider pt-2">
             <summary className="cursor-pointer break-words py-0.5 text-xs text-default-600 hover:text-foreground">查看所有路径探测结果{paths.length > 0 && <span className="ml-2 tabular-nums text-default-500">{paths.length} 条</span>}</summary>
             <div className="mt-2 grid gap-1.5 text-xs">
-              <p className="break-words text-default-500">{useStun ? `UDP 往返延迟至 ${stunTarget}` : "TCP 建连耗时至业务目标"}</p>
+              <p className="break-words text-default-500">{probeDescription}</p>
               {paths.length === 0 ? <p className="text-default-500">等待探测</p> : paths.map((path, index) => (
                 <div key={path.name} className="flex min-w-0 flex-wrap justify-between gap-x-3 gap-y-1 rounded-md border border-divider px-2 py-1.5">
                   <span className="min-w-0 break-words">{index === chain.selectedPathIndex && <span className="mr-1.5 text-primary">当前</span>}{pathLabel(path)}</span>
-                  <span className="min-w-0 break-words tabular-nums text-default-600">{path.available && path.latencyMs != null ? latencyLabel(path.latencyMs, useStun) : (path.error || "等待探测/不可用")}</span>
+                  <span className="min-w-0 break-words tabular-nums text-default-600">{path.available && path.latencyMs != null ? latencyLabel(path.latencyMs, udpProbe) : (path.error || "等待探测/不可用")}</span>
                 </div>
               ))}
             </div>
@@ -497,13 +501,24 @@ export default function ForwardChainPage() {
           </div>)}
           <p className="text-tiny text-default-500">同一条链中，入口和各跳候选服务器不能重复。系统会探测所有候选组合；路径数量较多时会限制同时探测数。</p>
         </div>
-        {form.protocol === "udp" && <Select label="选路探测方式" selectedKeys={[form.probeMode]}
-          description={form.probeMode === "udp_stun" ? `测量每条候选路径到 ${stunTarget} 的 UDP 往返延迟。需要更新入口及候选节点程序。` : "通过配套 TCP 链路测量到业务目标的建连耗时。"}
-          onSelectionChange={keys => setForm(f => ({ ...f, probeMode: Array.from(keys)[0] === "udp_stun" ? "udp_stun" : "tcp" }))}
-        >
-          <SelectItem key="tcp">TCP 建连到业务目标</SelectItem>
-          <SelectItem key="udp_stun">UDP STUN 到 Google</SelectItem>
-        </Select>}
+        {form.protocol === "udp" && (
+          <>
+            <Select label="选路探测方式" selectedKeys={[form.probeMode]}
+              description={form.probeMode === "udp_echo"
+                ? `测量每条候选路径到目标服务器 ${UDP_ECHO_PORT}/UDP 的往返延迟。`
+                : form.probeMode === "udp_stun" ? `测量每条候选路径到 ${stunTarget} 的 UDP 往返延迟。`
+                  : "通过配套 TCP 链路测量到业务目标的建连耗时。"}
+              onSelectionChange={keys => {
+                const mode = Array.from(keys)[0];
+                if (mode === "tcp" || mode === "udp_stun" || mode === "udp_echo") setForm(f => ({ ...f, probeMode: mode }));
+              }}>
+              <SelectItem key="tcp">TCP 建连到业务目标</SelectItem>
+              <SelectItem key="udp_stun">UDP STUN 到 Google</SelectItem>
+              <SelectItem key="udp_echo">UDP 回显</SelectItem>
+            </Select>
+            {form.probeMode === "udp_echo" && <UdpEchoInstall />}
+          </>
+        )}
         <div className="grid md:grid-cols-3 gap-3"><Input type="number" label="探测间隔（秒）" min={MIN_PROBE_INTERVAL_SECONDS} max={3600} value={form.probeIntervalSeconds} onChange={e => setForm(f => ({ ...f, probeIntervalSeconds: e.target.value }))} />
           <Input type="number" label="单次探测超时（秒）" min={1} max={5} step={0.1} value={form.probeTimeoutSeconds} onChange={e => setForm(f => ({ ...f, probeTimeoutSeconds: e.target.value }))} />
           <Input type="number" label="切换阈值（毫秒）" min={1} max={Math.round(Number(form.probeTimeoutSeconds) * 1000)} value={form.switchThresholdMs} onChange={e => setForm(f => ({ ...f, switchThresholdMs: e.target.value }))} />

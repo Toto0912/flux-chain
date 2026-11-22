@@ -36,7 +36,7 @@ jobs:
         run: |
           python3 scripts/check_release.py
           if [[ "$GITHUB_REF_TYPE" == tag ]]; then python3 scripts/check_release.py "$GITHUB_REF_NAME"; fi
-          for script in panel_install.sh install.sh build_node.sh; do bash -n "$script"; done
+          for script in panel_install.sh install.sh build_node.sh vite-frontend/public/udp-echo/install-udp-echo.sh; do bash -n "$script"; done
           bash tests/local-install-smoke.sh
           bash tests/online-install-smoke.sh
           bash tests/network-mode-smoke.sh
@@ -52,7 +52,7 @@ jobs:
         working-directory: go-gost
         run: |
           go test x/socket/probe_context.go x/socket/probe_context_test.go x/socket/probe_dispatch.go x/socket/probe_dispatch_test.go -count=1
-          go test -mod=readonly github.com/go-gost/x/internal/util/stunprobe github.com/go-gost/x/handler/stunprobe github.com/go-gost/x/connector/relay -count=1
+          go test -mod=readonly github.com/go-gost/x/internal/util/forwardhealth github.com/go-gost/x/internal/util/stunprobe github.com/go-gost/x/handler/stunprobe github.com/go-gost/x/connector/relay -count=1
           go test -mod=readonly github.com/go-gost/x/listener/quic -count=1
           CGO_ENABLED=0 go build -mod=readonly -trimpath -o /tmp/fluxchain-node .
           cd /tmp
@@ -167,8 +167,10 @@ jobs:
           version=$(cat VERSION)
           python3 scripts/check_release.py "$GITHUB_REF_NAME"
           release_notes=$(cat <<EOF
-          - 转发管理支持为每条转发保存诊断方式，可选 TCP 建连延迟或 UDP STUN 到 Google 延迟。新建时留空和升级前的转发都默认使用 TCP。
-          - 隧道转发的 UDP 诊断分别显示入口到出口的 UDP 回显，以及出口到 Google STUN 的往返延迟。
+          - 普通转发新增目标健康检查和最低延迟自动切换。启用后可查看各目标的探测结果，出口到 Google STUN 的延迟单独展示。
+          - 普通转发和转发链均支持 UDP 回显探测。可从面板复制一键安装命令，在目标服务器部署监听 UDP 19302 的回显服务。
+          - 普通转发每条最多可新增至 64 个目标，健康检查按用户和出口节点限制负载。修复探测结果过大时节点控制连接断开的问题。
+          - 使用新探测功能前，请将面板和参与探测的节点更新到本版本。
 
           [安装与更新说明](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/README.md)
           EOF

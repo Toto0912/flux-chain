@@ -15,6 +15,7 @@ import (
 	"github.com/go-gost/core/observer/stats"
 	"github.com/go-gost/core/recorder"
 	ctxvalue "github.com/go-gost/x/ctx"
+	xhop "github.com/go-gost/x/hop"
 	xnet "github.com/go-gost/x/internal/net"
 	"github.com/go-gost/x/internal/util/forwarder"
 	"github.com/go-gost/x/internal/util/sniffing"
@@ -177,10 +178,13 @@ func (h *forwardHandler) Handle(ctx context.Context, conn net.Conn, opts ...hand
 	}
 
 	target := &chain.Node{}
+	activeHealth := xhop.UsesTargetHealth(h.hop, network)
 	if h.hop != nil {
-		target = h.hop.Select(ctx,
-			hop.ProtocolSelectOption(proto),
-		)
+		opts := []hop.SelectOption{hop.ProtocolSelectOption(proto)}
+		if activeHealth {
+			opts = append(opts, hop.NetworkSelectOption(network))
+		}
+		target = h.hop.Select(ctx, opts...)
 	}
 	if target == nil {
 		err := errors.New("node not available")
@@ -208,12 +212,12 @@ func (h *forwardHandler) Handle(ctx context.Context, conn net.Conn, opts ...hand
 	if err != nil {
 		// TODO: the router itself may be failed due to the failed node in the router,
 		// the dead marker may be a wrong operation.
-		if marker := target.Marker(); marker != nil {
+		if marker := target.Marker(); marker != nil && !activeHealth {
 			marker.Mark()
 		}
 		return err
 	}
-	if marker := target.Marker(); marker != nil {
+	if marker := target.Marker(); marker != nil && !activeHealth {
 		marker.Reset()
 	}
 	defer cc.Close()

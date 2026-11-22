@@ -26,6 +26,7 @@ import (
 	"github.com/go-gost/core/service"
 	ctxvalue "github.com/go-gost/x/ctx"
 	xnet "github.com/go-gost/x/internal/net"
+	"github.com/go-gost/x/internal/util/forwardhealth"
 	xmetrics "github.com/go-gost/x/metrics"
 	xstats "github.com/go-gost/x/observer/stats"
 	"github.com/rs/xid"
@@ -42,6 +43,7 @@ type options struct {
 	observer       observer.Observer
 	observerPeriod time.Duration
 	logger         logger.Logger
+	targetHealth   *forwardhealth.Monitor
 }
 
 var isTls = 0
@@ -136,12 +138,18 @@ func LoggerOption(logger logger.Logger) Option {
 	}
 }
 
+func TargetHealthOption(monitor *forwardhealth.Monitor) Option {
+	return func(opts *options) { opts.targetHealth = monitor }
+}
+
 type defaultService struct {
 	name     string
 	listener listener.Listener
 	handler  handler.Handler
 	status   *Status
 	options  options
+	probeContext context.Context
+	stopProbes context.CancelFunc
 }
 
 func NewService(name string, ln listener.Listener, h handler.Handler, opts ...Option) service.Service {
@@ -159,6 +167,9 @@ func NewService(name string, ln listener.Listener, h handler.Handler, opts ...Op
 			events:     make([]Event, 0, MaxEventSize),
 			stats:      options.stats,
 		},
+	}
+	if options.targetHealth != nil {
+		s.probeContext, s.stopProbes = context.WithCancel(context.Background())
 	}
 	s.setState(StateRunning)
 
@@ -182,6 +193,9 @@ func (s *defaultService) Serve() error {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	if s.options.targetHealth != nil {
+		go s.options.targetHealth.Run(s.probeContext)
+	}
 
 	if s.status.Stats() != nil {
 		go s.observeStats(ctx)
@@ -196,6 +210,9 @@ func (s *defaultService) Serve() error {
 
 	var wg sync.WaitGroup
 	defer wg.Wait()
+	if s.stopProbes != nil {
+		defer s.stopProbes()
+	}
 
 	var tempDelay time.Duration
 	for {
@@ -314,7 +331,14 @@ func (s *defaultService) Status() *Status {
 	return s.status
 }
 
+func (s *defaultService) TargetHealthStatus() map[string]forwardhealth.Snapshot {
+	return s.options.targetHealth.Status()
+}
+
 func (s *defaultService) Close() error {
+	if s.stopProbes != nil {
+		s.stopProbes()
+	}
 	s.execCmds("pre-down", s.options.preDown)
 	defer s.execCmds("post-down", s.options.postDown)
 

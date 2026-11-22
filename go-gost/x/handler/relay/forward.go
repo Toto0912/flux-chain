@@ -7,11 +7,13 @@ import (
 	"net"
 	"time"
 
+	"github.com/go-gost/core/hop"
 	"github.com/go-gost/core/limiter"
 	"github.com/go-gost/core/logger"
 	"github.com/go-gost/core/observer/stats"
 	"github.com/go-gost/relay"
 	ctxvalue "github.com/go-gost/x/ctx"
+	xhop "github.com/go-gost/x/hop"
 	xnet "github.com/go-gost/x/internal/net"
 	"github.com/go-gost/x/limiter/traffic/wrapper"
 	stats_wrapper "github.com/go-gost/x/observer/stats/wrapper"
@@ -22,7 +24,12 @@ func (h *relayHandler) handleForward(ctx context.Context, conn net.Conn, network
 		Version: relay.Version1,
 		Status:  relay.StatusOK,
 	}
-	target := h.hop.Select(ctx)
+	activeHealth := xhop.UsesTargetHealth(h.hop, network)
+	var opts []hop.SelectOption
+	if activeHealth {
+		opts = append(opts, hop.NetworkSelectOption(network))
+	}
+	target := h.hop.Select(ctx, opts...)
 	if target == nil {
 		resp.Status = relay.StatusServiceUnavailable
 		resp.WriteTo(conn)
@@ -65,7 +72,7 @@ func (h *relayHandler) handleForward(ctx context.Context, conn net.Conn, network
 	if err != nil {
 		// TODO: the router itself may be failed due to the failed node in the router,
 		// the dead marker may be a wrong operation.
-		if marker := target.Marker(); marker != nil {
+		if marker := target.Marker(); marker != nil && !activeHealth {
 			marker.Mark()
 		}
 
@@ -76,7 +83,7 @@ func (h *relayHandler) handleForward(ctx context.Context, conn net.Conn, network
 		return err
 	}
 	defer cc.Close()
-	if marker := target.Marker(); marker != nil {
+	if marker := target.Marker(); marker != nil && !activeHealth {
 		marker.Reset()
 	}
 

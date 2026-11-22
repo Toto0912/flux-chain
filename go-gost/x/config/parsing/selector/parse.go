@@ -37,25 +37,24 @@ func ParseNodeSelector(cfg *config.SelectorConfig) selector.Selector[*chain.Node
 		return nil
 	}
 
-	var strategy selector.Strategy[*chain.Node]
-	switch cfg.Strategy {
-	case "round", "rr":
-		strategy = xs.RoundRobinStrategy[*chain.Node]()
-	case "random", "rand":
-		strategy = xs.RandomStrategy[*chain.Node]()
-	case "fifo", "ha":
-		strategy = xs.FIFOStrategy[*chain.Node]()
-	case "hash":
-		strategy = xs.HashStrategy[*chain.Node]()
-	default:
-		strategy = xs.RoundRobinStrategy[*chain.Node]()
-	}
-
 	return xs.NewSelector(
-		strategy,
+		ParseNodeStrategy(cfg.Strategy),
 		xs.FailFilter[*chain.Node](cfg.MaxFails, cfg.FailTimeout),
 		xs.BackupFilter[*chain.Node](),
 	)
+}
+
+func ParseNodeStrategy(strategy string) selector.Strategy[*chain.Node] {
+	switch strategy {
+	case "random", "rand":
+		return xs.RandomStrategy[*chain.Node]()
+	case "fifo", "ha", "latency":
+		return xs.FIFOStrategy[*chain.Node]()
+	case "hash":
+		return xs.HashStrategy[*chain.Node]()
+	default:
+		return xs.RoundRobinStrategy[*chain.Node]()
+	}
 }
 
 func DefaultNodeSelector() selector.Selector[*chain.Node] {

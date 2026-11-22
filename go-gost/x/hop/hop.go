@@ -19,18 +19,20 @@ import (
 	"github.com/go-gost/x/config"
 	node_parser "github.com/go-gost/x/config/parsing/node"
 	"github.com/go-gost/x/internal/loader"
+	"github.com/go-gost/x/internal/util/forwardhealth"
 )
 
 type options struct {
-	name        string
-	nodes       []*chain.Node
-	bypass      bypass.Bypass
-	selector    selector.Selector[*chain.Node]
-	fileLoader  loader.Loader
-	redisLoader loader.Loader
-	httpLoader  loader.Loader
-	period      time.Duration
-	logger      logger.Logger
+	name         string
+	nodes        []*chain.Node
+	bypass       bypass.Bypass
+	selector     selector.Selector[*chain.Node]
+	fileLoader   loader.Loader
+	redisLoader  loader.Loader
+	httpLoader   loader.Loader
+	period       time.Duration
+	logger       logger.Logger
+	targetHealth *forwardhealth.Monitor
 }
 
 type Option func(*options)
@@ -56,6 +58,15 @@ func SelectorOption(s selector.Selector[*chain.Node]) Option {
 	return func(o *options) {
 		o.selector = s
 	}
+}
+
+func TargetHealthOption(monitor *forwardhealth.Monitor) Option {
+	return func(opts *options) { opts.targetHealth = monitor }
+}
+
+func UsesTargetHealth(h hop.Hop, network string) bool {
+	p, ok := h.(*chainHop)
+	return ok && p.options.targetHealth.SelectsTargets(network)
 }
 
 func ReloadPeriodOption(period time.Duration) Option {
@@ -189,6 +200,9 @@ func (p *chainHop) Select(ctx context.Context, opts ...hop.SelectOption) *chain.
 		return nodes[0]
 	}
 
+	if target, handled := p.options.targetHealth.Select(ctx, options.Network, nodes); handled {
+		return target
+	}
 	if s := p.options.selector; s != nil {
 		return s.Select(ctx, nodes...)
 	}

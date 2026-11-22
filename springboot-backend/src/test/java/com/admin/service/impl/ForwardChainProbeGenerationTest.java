@@ -50,6 +50,14 @@ class ForwardChainProbeGenerationTest {
         staleProbeDoesNotWrite(chain("udp", "{\"2\":28200}"), current);
     }
 
+    @Test void changingFromStunToEchoRejectsInFlightProbes() {
+        ForwardChain stun = chain("udp", "{\"2\":28200}");
+        stun.setProbeMode("udp_stun");
+        ForwardChain echo = chain("udp", "{\"2\":28200}");
+        echo.setProbeMode("udp_echo");
+        staleProbeDoesNotWrite(stun, echo);
+    }
+
     @Test void pausedChainRejectsInFlightProbes() {
         ForwardChain current = chain("udp", "{\"2\":28200}");
         current.setStatus(0);

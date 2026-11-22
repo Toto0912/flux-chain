@@ -353,9 +353,19 @@ type ForwarderConfig struct {
 	// Deprecated: use hop instead
 	Name string `yaml:",omitempty" json:"name,omitempty"`
 	// the referenced hop name
-	Hop      string               `yaml:",omitempty" json:"hop,omitempty"`
-	Selector *SelectorConfig      `yaml:",omitempty" json:"selector,omitempty"`
-	Nodes    []*ForwardNodeConfig `json:"nodes"`
+	Hop          string                     `yaml:",omitempty" json:"hop,omitempty"`
+	Selector     *SelectorConfig            `yaml:",omitempty" json:"selector,omitempty"`
+	Nodes        []*ForwardNodeConfig       `json:"nodes"`
+	TargetHealth *ForwardTargetHealthConfig `yaml:"targetHealth,omitempty" json:"targetHealth,omitempty"`
+}
+
+type ForwardTargetHealthConfig struct {
+	TCP               bool     `yaml:"tcp" json:"tcp"`
+	UDPMode           string   `yaml:"udpMode" json:"udpMode"`
+	UDPTargets        []string `yaml:"udpTargets,omitempty" json:"udpTargets,omitempty"`
+	IntervalSeconds   int      `yaml:"intervalSeconds" json:"intervalSeconds"`
+	TimeoutSeconds    int      `yaml:"timeoutSeconds" json:"timeoutSeconds"`
+	SwitchThresholdMs int      `yaml:"switchThresholdMs" json:"switchThresholdMs"`
 }
 
 type ForwardNodeConfig struct {

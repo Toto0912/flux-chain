@@ -1,6 +1,7 @@
 package com.admin.common.dto;
 
 import lombok.Data;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 
 /**
  * <p>
@@ -87,6 +88,13 @@ public class ForwardWithTunnelDto {
     private String strategy;
 
     private String probeMode;
+
+    @JsonIgnore
+    private String targetHealthConfig;
+
+    public ForwardTargetHealthConfig getTargetHealth() {
+        return ForwardTargetHealthConfig.read(targetHealthConfig);
+    }
 
     private Integer inx;
 

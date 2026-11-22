@@ -219,7 +219,7 @@ func (w *WebSocketReporter) connect() error {
 
 	// 使用最新的配置重新构建 URL
 	currentURL := "ws://" + w.addr + "/system-info?type=1&secret=" + w.secret + "&version=" + w.version +
-		"&http=" + strconv.Itoa(cfg.Http) + "&tls=" + strconv.Itoa(cfg.Tls) + "&socks=" + strconv.Itoa(cfg.Socks) + "&udpStunProbe=1&forwardUdpStun=1"
+		"&http=" + strconv.Itoa(cfg.Http) + "&tls=" + strconv.Itoa(cfg.Tls) + "&socks=" + strconv.Itoa(cfg.Socks) + probeCapabilities
 
 	u, err := url.Parse(currentURL)
 	if err != nil {
@@ -509,7 +509,7 @@ func (w *WebSocketReporter) dispatchCommand(cmd CommandMessage) {
 
 func isProbeCommand(command string) bool {
 	switch command {
-	case "TcpPing", "UdpStunProbe", "PrepareForwardUdpStun", "ForwardUdpStun":
+	case "TcpPing", "UdpStunProbe", "PrepareForwardUdpStun", "ForwardUdpStun", "ForwardTargetHealthStatus":
 		return true
 	default:
 		return false
@@ -597,6 +597,9 @@ func (w *WebSocketReporter) routeCommand(cmd CommandMessage) {
 	case "ForwardUdpStun":
 		response.Type = "ForwardUdpStunResponse"
 		response.Data, err = w.handleForwardUdpStun(cmd.Data)
+	case "ForwardTargetHealthStatus":
+		response.Type = "ForwardTargetHealthStatusResponse"
+		response.Data, err = forwardTargetHealthStatus(cmd.Data)
 
 	// Protocol blocking switches
 	case "SetProtocol":
@@ -1119,7 +1122,7 @@ func getMemoryInfo() MemoryInfo {
 func StartWebSocketReporterWithConfig(addr string, secret string, http int, tls int, socks int, version string) *WebSocketReporter {
 
 	// 构建初始 WebSocket URL
-	fullURL := "ws://" + addr + "/system-info?type=1&secret=" + secret + "&version=" + version + "&http=" + strconv.Itoa(http) + "&tls=" + strconv.Itoa(tls) + "&socks=" + strconv.Itoa(socks) + "&udpStunProbe=1&forwardUdpStun=1"
+	fullURL := "ws://" + addr + "/system-info?type=1&secret=" + secret + "&version=" + version + "&http=" + strconv.Itoa(http) + "&tls=" + strconv.Itoa(tls) + "&socks=" + strconv.Itoa(socks) + probeCapabilities
 
 	fmt.Printf("🔗 WebSocket连接URL: %s\n", fullURL)
 
@@ -1132,11 +1135,14 @@ func StartWebSocketReporterWithConfig(addr string, secret string, http int, tls 
 	return reporter
 }
 
+const probeCapabilities = "&udpStunProbe=1&forwardUdpStun=1&forwardTargetHealth=1&udpEchoProbe=1&forwardEgressStun=1"
+
 func (w *WebSocketReporter) handleUdpStunProbe(data interface{}) (interface{}, error) {
 	var request struct {
 		Address string `json:"address"`
 		Key     string `json:"fluxchainStunKey"`
 		Timeout int    `json:"timeout"`
+		Mode    string `json:"mode"`
 	}
 	jsonData, err := json.Marshal(data)
 	if err != nil {
@@ -1161,6 +1167,12 @@ func (w *WebSocketReporter) handleUdpStunProbe(data interface{}) (interface{}, e
 	defer cancel()
 	elapsed, err := stunprobe.Probe(ctx, request.Address, key)
 	if err != nil {
+		if request.Mode == "udp_echo" {
+			if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
+				return nil, fmt.Errorf("未收到目标服务器的 UDP 回显（19302/UDP 探测超时）")
+			}
+			return nil, fmt.Errorf("UDP 回显探测失败：%w", err)
+		}
 		if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
 			return nil, fmt.Errorf("未收到 Google STUN 应答（探测超时）")
 		}

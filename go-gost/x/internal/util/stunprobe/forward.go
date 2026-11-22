@@ -18,6 +18,8 @@ const (
 	TunnelProbeAck     = "fluxchain-stun-accepted"
 	ticketLifetime     = 15 * time.Second
 	maxTickets         = 64
+	EchoPort           = "19302"
+	echoPrefix         = "FCE1"
 )
 
 type tunnelTicket struct {
@@ -78,16 +80,24 @@ func TunnelProbeToken(ctx context.Context) string {
 type DialUDP func(context.Context, string) (net.Conn, error)
 
 func ProbeGoogle(ctx context.Context, dial DialUDP) (time.Duration, error) {
+	return ProbeBinding(ctx, GoogleAddress, dial)
+}
+
+func ProbeBinding(ctx context.Context, address string, dial DialUDP) (time.Duration, error) {
 	var request [stunHeaderLen]byte
 	if err := fillBindingRequest(request[:]); err != nil {
 		return 0, err
 	}
-	_, latency, err := exchangeGoogle(ctx, request[:], dial)
+	_, latency, err := exchangeBinding(ctx, address, request[:], dial)
 	return latency, err
 }
 
 func exchangeGoogle(ctx context.Context, request []byte, dial DialUDP) ([]byte, time.Duration, error) {
-	conn, err := dial(ctx, GoogleAddress)
+	return exchangeBinding(ctx, GoogleAddress, request, dial)
+}
+
+func exchangeBinding(ctx context.Context, address string, request []byte, dial DialUDP) ([]byte, time.Duration, error) {
+	conn, err := dial(ctx, address)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -95,6 +105,33 @@ func exchangeGoogle(ctx context.Context, request []byte, dial DialUDP) ([]byte, 
 	return exchangeConnected(ctx, conn, request, maxSTUNReply, func(reply []byte) bool {
 		return validBindingReply(reply, request)
 	})
+}
+
+func ProbeEcho(ctx context.Context, address string, dial DialUDP) (time.Duration, error) {
+	var request [16]byte
+	return probeEcho(ctx, address, dial, request[:], 0)
+}
+
+// ProbeFixedEcho checks a target running the standalone FluxChain echo service.
+func ProbeFixedEcho(ctx context.Context, address string, dial DialUDP) (time.Duration, error) {
+	var request [len(echoPrefix) + 16]byte
+	copy(request[:], echoPrefix)
+	return probeEcho(ctx, address, dial, request[:], len(echoPrefix))
+}
+
+func probeEcho(ctx context.Context, address string, dial DialUDP, request []byte, nonceOffset int) (time.Duration, error) {
+	if _, err := rand.Read(request[nonceOffset:]); err != nil {
+		return 0, err
+	}
+	conn, err := dial(ctx, address)
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close()
+	_, latency, err := exchangeConnected(ctx, conn, request, len(request), func(reply []byte) bool {
+		return bytes.Equal(reply, request)
+	})
+	return latency, err
 }
 
 type TunnelTimings struct {

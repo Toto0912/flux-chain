@@ -38,6 +38,7 @@ CREATE TABLE `forward` (
   `remote_addr` longtext NOT NULL,
   `strategy` varchar(100) NOT NULL DEFAULT 'fifo',
   `probe_mode` varchar(12) NOT NULL DEFAULT 'tcp',
+  `target_health_config` longtext NULL,
   `interface_name` varchar(200) DEFAULT NULL,
   `in_flow` bigint(20) NOT NULL DEFAULT '0',
   `out_flow` bigint(20) NOT NULL DEFAULT '0',

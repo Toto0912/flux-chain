@@ -62,11 +62,11 @@ func TestExpiredOrUnsignedRelayDatagramsAreIgnored(t *testing.T) {
 	binary.BigEndian.PutUint64(packet[stunHeaderLen:], uint64(time.Now().Unix()-120))
 	key := bytes.Repeat([]byte{1}, 32)
 	sign(packet, key)
-	if reply, err := Relay(context.Background(), "invalid", packet, key); reply != nil || err != nil {
+	if reply, err := Relay(context.Background(), "invalid", "", packet, key); reply != nil || err != nil {
 		t.Fatal("expired packet reached the next hop dialer")
 	}
 	binary.BigEndian.PutUint64(packet[stunHeaderLen:], uint64(time.Now().Unix()))
-	if reply, err := Relay(context.Background(), "invalid", packet, key); reply != nil || err != nil {
+	if reply, err := Relay(context.Background(), "invalid", "", packet, key); reply != nil || err != nil {
 		t.Fatal("unsigned packet reached the next hop dialer")
 	}
 }

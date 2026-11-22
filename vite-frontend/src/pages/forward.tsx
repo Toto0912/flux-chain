@@ -46,6 +46,7 @@ import {
   updateForwardOrder
 } from "@/api";
 import { JwtUtil } from "@/utils/jwt";
+import { defaultTargetHealth, TargetHealthDialog, TargetHealthFields, type TargetHealthSettings } from "@/components/forward-target-health";
 
 interface Forward {
   id: number;
@@ -61,6 +62,7 @@ interface Forward {
   inFlow: number;
   outFlow: number;
   probeMode?: ForwardProbeMode;
+  targetHealth?: TargetHealthSettings;
   serviceRunning: boolean;
   createdTime: string;
   userName?: string;
@@ -85,6 +87,7 @@ interface ForwardForm {
   interfaceName?: string;
   strategy: string;
   probeMode?: ForwardProbeMode;
+  targetHealth?: TargetHealthSettings;
 }
 
 const PROBE_MODE_LABELS: Record<ForwardProbeMode, string> = {
@@ -167,6 +170,7 @@ export default function ForwardPage() {
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [addressModalOpen, setAddressModalOpen] = useState(false);
   const [diagnosisModalOpen, setDiagnosisModalOpen] = useState(false);
+  const [healthForward, setHealthForward] = useState<Forward | null>(null);
   const [isEdit, setIsEdit] = useState(false);
   const [submitLoading, setSubmitLoading] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
@@ -475,7 +479,8 @@ export default function ForwardPage() {
       remoteAddr: forward.remoteAddr.split(',').join('\n'),
       interfaceName: forward.interfaceName || '',
       strategy: forward.strategy || 'fifo',
-      probeMode: forward.probeMode ?? "tcp"
+      probeMode: forward.probeMode ?? "tcp",
+      targetHealth: forward.targetHealth,
     });
     const tunnel = tunnels.find(t => t.id === forward.tunnelId);
     setSelectedTunnel(tunnel || null);
@@ -542,6 +547,7 @@ export default function ForwardPage() {
         .join(',');
 
       const addressCount = processedRemoteAddr.split(',').length;
+      const targetHealth = addressCount > 1 && form.targetHealth?.enabled ? form.targetHealth : { enabled: false };
       
       let res;
       if (isEdit) {
@@ -555,6 +561,7 @@ export default function ForwardPage() {
           remoteAddr: processedRemoteAddr,
           interfaceName: form.interfaceName,
           strategy: addressCount > 1 ? form.strategy : 'fifo',
+          targetHealth,
           probeMode: form.probeMode ?? "tcp"
         };
         res = await updateForward(updateData);
@@ -567,6 +574,7 @@ export default function ForwardPage() {
           remoteAddr: processedRemoteAddr,
           interfaceName: form.interfaceName,
           strategy: addressCount > 1 ? form.strategy : 'fifo',
+          targetHealth,
           probeMode: form.probeMode
         };
         res = await createForward(createData);
@@ -1035,17 +1043,18 @@ export default function ForwardPage() {
         return { color: 'success', text: '轮询' };
       case 'rand':
         return { color: 'warning', text: '随机' };
+      case 'hash':
+        return { color: 'secondary', text: '哈希' };
+      case 'latency':
+        return { color: 'primary', text: '最低延迟' };
       default:
         return { color: 'default', text: '未知' };
     }
   };
 
-  // 获取地址数量
-  const getAddressCount = (addressString: string): number => {
-    if (!addressString) return 0;
-    const addresses = addressString.split('\n').map(addr => addr.trim()).filter(addr => addr);
-    return addresses.length;
-  };
+  const formTargets = form.remoteAddr.split("\n").map(address => address.trim()).filter(Boolean);
+  const hasMultipleTargets = formTargets.length > 1;
+  const formHealthEnabled = hasMultipleTargets && form.targetHealth?.enabled;
 
   // 处理拖拽结束
   const handleDragEnd = async (event: DragEndEvent) => {
@@ -1197,6 +1206,7 @@ export default function ForwardPage() {
   const renderForwardCard = (forward: Forward, listeners?: any) => {
     const statusDisplay = getStatusDisplay(forward.status);
     const strategyDisplay = getStrategyDisplay(forward.strategy);
+    const healthEnabled = forward.targetHealth?.enabled;
     
     return (
       <Card key={forward.id} className="group shadow-sm border border-divider hover:shadow-md transition-shadow duration-200">
@@ -1326,15 +1336,19 @@ export default function ForwardPage() {
               size="sm"
               variant="flat"
               color="warning"
-              onPress={() => handleDiagnose(forward)}
+              onPress={healthEnabled ? () => setHealthForward(forward) : () => handleDiagnose(forward)}
               className="flex-1 min-h-8"
-              startContent={
+              startContent={healthEnabled ? (
+                <svg aria-hidden="true" className="w-3 h-3" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M2 10h4l2-5 4 10 2-5h4" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              ) : (
                 <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
                   <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
                 </svg>
-              }
+              )}
             >
-              诊断
+              {healthEnabled ? "探测结果" : "诊断"}
             </Button>
             <Button
               size="sm"
@@ -1660,37 +1674,54 @@ export default function ForwardPage() {
                       description="用于多IP服务器指定使用那个IP请求远程地址，不懂的默认为空就行"
                     />
                     
-                    {getAddressCount(form.remoteAddr) > 1 && (
+                    {hasMultipleTargets && (
+                      <>
+                        <Select
+                          label="负载策略"
+                          selectedKeys={[form.strategy]}
+                          onSelectionChange={(keys) => {
+                            const strategy = Array.from(keys)[0] as string | undefined;
+                            if (strategy) setForm(prev => ({
+                              ...prev, strategy,
+                              targetHealth: strategy === "latency"
+                                ? { ...(prev.targetHealth ?? defaultTargetHealth), enabled: true }
+                                : prev.targetHealth,
+                            }));
+                          }}
+                          variant="bordered"
+                        >
+                          <SelectItem key="fifo">主备模式 - 自上而下</SelectItem>
+                          <SelectItem key="round">轮询模式 - 依次轮换</SelectItem>
+                          <SelectItem key="rand">随机模式 - 随机选择</SelectItem>
+                          <SelectItem key="hash">哈希模式 - IP哈希</SelectItem>
+                          <SelectItem key="latency">最低延迟 - 自动切换</SelectItem>
+                        </Select>
+                        <TargetHealthFields
+                          settings={form.targetHealth ?? defaultTargetHealth}
+                          targets={formTargets}
+                          latency={form.strategy === "latency"}
+                          onChange={(targetHealth) => setForm(prev => ({
+                            ...prev, targetHealth,
+                            strategy: !targetHealth.enabled && prev.strategy === "latency" ? "fifo" : prev.strategy,
+                          }))}
+                        />
+                      </>
+                    )}
+                    {!formHealthEnabled && (
                       <Select
-                        label="负载策略"
-                        placeholder="请选择负载均衡策略"
-                        selectedKeys={[form.strategy]}
+                        label="选择诊断方式"
+                        placeholder="留空时使用 TCP 建连延迟"
+                        selectedKeys={form.probeMode ? [form.probeMode] : []}
                         onSelectionChange={(keys) => {
-                          const selectedKey = Array.from(keys)[0] as string;
-                          setForm(prev => ({ ...prev, strategy: selectedKey }));
+                          const probeMode = Array.from(keys)[0] as ForwardProbeMode | undefined;
+                          setForm(prev => ({ ...prev, probeMode }));
                         }}
                         variant="bordered"
-                        description="多个目标地址的负载均衡策略"
                       >
-                        <SelectItem key="fifo" >主备模式 - 自上而下</SelectItem>
-                        <SelectItem key="round" >轮询模式 - 依次轮换</SelectItem>
-                        <SelectItem key="rand" >随机模式 - 随机选择</SelectItem>
-                        <SelectItem key="hash" >哈希模式 - IP哈希</SelectItem>
+                        <SelectItem key="tcp">{PROBE_MODE_LABELS.tcp}</SelectItem>
+                        <SelectItem key="udp_stun">{PROBE_MODE_LABELS.udp_stun}</SelectItem>
                       </Select>
                     )}
-                    <Select
-                      label="选择诊断方式"
-                      placeholder="留空时使用 TCP 建连延迟"
-                      selectedKeys={form.probeMode ? [form.probeMode] : []}
-                      onSelectionChange={(keys) => {
-                        const probeMode = Array.from(keys)[0] as ForwardProbeMode | undefined;
-                        setForm(prev => ({ ...prev, probeMode }));
-                      }}
-                      variant="bordered"
-                    >
-                      <SelectItem key="tcp">{PROBE_MODE_LABELS.tcp}</SelectItem>
-                      <SelectItem key="udp_stun">{PROBE_MODE_LABELS.udp_stun}</SelectItem>
-                    </Select>
                   </div>
                 </ModalBody>
                 <ModalFooter>
@@ -2046,6 +2077,11 @@ export default function ForwardPage() {
             </ModalFooter>
           </ModalContent>
         </Modal>
+
+        {healthForward && (
+          <TargetHealthDialog key={healthForward.id} forwardId={healthForward.id} name={healthForward.name}
+            onClose={() => setHealthForward(null)} />
+        )}
 
         {/* 诊断结果模态框 */}
         <Modal 

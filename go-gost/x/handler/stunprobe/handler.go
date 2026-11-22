@@ -16,8 +16,9 @@ func init() {
 }
 
 type probeHandler struct {
-	nextHop string
-	key     []byte
+	nextHop    string
+	echoTarget string
+	key        []byte
 }
 
 func newHandler(_ ...handler.Option) handler.Handler {
@@ -26,6 +27,7 @@ func newHandler(_ ...handler.Option) handler.Handler {
 
 func (h *probeHandler) Init(metadata md.Metadata) error {
 	h.nextHop = mdutil.GetString(metadata, "nextHop")
+	h.echoTarget = mdutil.GetString(metadata, "echoTarget")
 	key, err := stunprobe.ParseKey(mdutil.GetString(metadata, "fluxchainStunKey"))
 	h.key = key
 	return err
@@ -45,7 +47,7 @@ func (h *probeHandler) Handle(ctx context.Context, conn net.Conn, _ ...handler.H
 	if err != nil {
 		return err
 	}
-	reply, err := stunprobe.Relay(ctx, h.nextHop, packet[:n], h.key)
+	reply, err := stunprobe.Relay(ctx, h.nextHop, h.echoTarget, packet[:n], h.key)
 	if err != nil || reply == nil {
 		return err
 	}

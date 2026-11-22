@@ -19,6 +19,7 @@
             f.in_flow AS inFlow,
             f.strategy AS strategy,
             f.probe_mode AS probeMode,
+            f.target_health_config AS targetHealthConfig,
             f.out_flow AS outFlow,
             f.inx AS inx,
             f.interface_name AS interfaceName,
@@ -54,6 +55,7 @@
             f.out_flow AS outFlow,
             f.strategy AS strategy,
             f.probe_mode AS probeMode,
+            f.target_health_config AS targetHealthConfig,
             f.inx AS inx,
             f.interface_name AS interfaceName,
             t.name AS tunnelName,
@@ -72,4 +74,13 @@
             f.created_time DESC
     </select>
 
+    <select id="selectReservedTargetHealthForNode" resultType="com.admin.entity.Forward">
+        SELECT f.user_id AS userId, f.remote_addr AS remoteAddr, f.target_health_config AS targetHealthConfig
+        FROM forward f
+        INNER JOIN tunnel t ON t.id = f.tunnel_id
+        WHERE f.status IN (1, -1)
+          AND f.target_health_config IS NOT NULL AND f.target_health_config != ''
+          AND ((t.type = 1 AND t.in_node_id = #{nodeId}) OR (t.type = 2 AND t.out_node_id = #{nodeId}))
+        <if test="excludeId != null">AND f.id != #{excludeId}</if>
+    </select>
 </mapper>

@@ -30,4 +30,6 @@ public interface ForwardMapper extends BaseMapper<Forward> {
      */
     List<ForwardWithTunnelDto> selectForwardsWithTunnelByUserId(@Param("userId") Integer userId);
 
+    List<Forward> selectReservedTargetHealthForNode(@Param("nodeId") Long nodeId, @Param("excludeId") Long excludeId);
+
 }

@@ -21,7 +21,7 @@ import (
 	mdutil "github.com/go-gost/x/metadata/util"
 )
 
-func ParseHop(cfg *config.HopConfig, log logger.Logger) (hop.Hop, error) {
+func ParseHop(cfg *config.HopConfig, log logger.Logger, additionalOptions ...xhop.Option) (hop.Hop, error) {
 	if cfg == nil {
 		return nil, nil
 	}
@@ -141,5 +141,5 @@ func ParseHop(cfg *config.HopConfig, log logger.Logger) (hop.Hop, error) {
 			loader.TimeoutHTTPLoaderOption(cfg.HTTP.Timeout),
 		)))
 	}
-	return xhop.NewHop(opts...), nil
+	return xhop.NewHop(append(opts, additionalOptions...)...), nil
 }

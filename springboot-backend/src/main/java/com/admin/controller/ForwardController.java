@@ -11,6 +11,8 @@ import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
+import java.util.concurrent.Semaphore;
+import java.util.function.Supplier;
 
 /**
  * <p>
@@ -27,11 +29,14 @@ public class ForwardController extends BaseController {
 
     @Autowired
     private ForwardService forwardService;
+    private final Semaphore configurationRequests = new Semaphore(16);
+    private final Semaphore cleanupRequests = new Semaphore(8);
+    private final Semaphore healthStatusRequests = new Semaphore(16);
 
     @LogAnnotation
     @PostMapping("/create")
     public R create(@Validated @RequestBody ForwardDto forwardDto) {
-        return forwardService.createForward(forwardDto);
+        return withPermit(configurationRequests, "转发配置操作繁忙，请稍后重试", () -> forwardService.createForward(forwardDto));
     }
 
     @LogAnnotation
@@ -43,35 +48,35 @@ public class ForwardController extends BaseController {
     @LogAnnotation
     @PostMapping("/update")
     public R update(@Validated @RequestBody ForwardUpdateDto forwardUpdateDto) {
-        return forwardService.updateForward(forwardUpdateDto);
+        return withPermit(configurationRequests, "转发配置操作繁忙，请稍后重试", () -> forwardService.updateForward(forwardUpdateDto));
     }
 
     @LogAnnotation
     @PostMapping("/delete")
     public R delete(@RequestBody Map<String, Object> params) {
         Long id = Long.valueOf(params.get("id").toString());
-        return forwardService.deleteForward(id);
+        return withPermit(cleanupRequests, "转发清理操作繁忙，请稍后重试", () -> forwardService.deleteForward(id));
     }
 
     @LogAnnotation
     @PostMapping("/force-delete")
     public R forceDelete(@RequestBody Map<String, Object> params) {
         Long id = Long.valueOf(params.get("id").toString());
-        return forwardService.forceDeleteForward(id);
+        return withPermit(cleanupRequests, "转发清理操作繁忙，请稍后重试", () -> forwardService.forceDeleteForward(id));
     }
 
     @LogAnnotation
     @PostMapping("/pause")
     public R pause(@RequestBody Map<String, Object> params) {
         Long id = Long.valueOf(params.get("id").toString());
-        return forwardService.pauseForward(id);
+        return withPermit(cleanupRequests, "转发清理操作繁忙，请稍后重试", () -> forwardService.pauseForward(id));
     }
 
     @LogAnnotation
     @PostMapping("/resume")
     public R resume(@RequestBody Map<String, Object> params) {
         Long id = Long.valueOf(params.get("id").toString());
-        return forwardService.resumeForward(id);
+        return withPermit(configurationRequests, "转发配置操作繁忙，请稍后重试", () -> forwardService.resumeForward(id));
     }
 
     /**
@@ -84,6 +89,22 @@ public class ForwardController extends BaseController {
     public R diagnoseForward(@RequestBody Map<String, Object> params) {
         Long forwardId = Long.valueOf(params.get("forwardId").toString());
         return forwardService.diagnoseForward(forwardId);
+    }
+
+    @PostMapping("/target-health")
+    public R targetHealth(@RequestBody Map<String, Long> params) {
+        Long forwardId = params.get("forwardId");
+        if (forwardId == null) return R.err("转发 ID 不能为空");
+        return withPermit(healthStatusRequests, "探测结果查询繁忙，请稍后重试", () -> forwardService.getTargetHealth(forwardId));
+    }
+
+    private R withPermit(Semaphore permits, String busy, Supplier<R> operation) {
+        if (!permits.tryAcquire()) return R.err(busy);
+        try {
+            return operation.get();
+        } finally {
+            permits.release();
+        }
     }
 
     /**

@@ -41,6 +41,8 @@ public class ForwardChainServiceImpl extends ServiceImpl<ForwardChainMapper, For
     private static final long RETIRED_ENDPOINT_PORT_GRACE_MS = 60000L;
     private static final String SERVICE_PREFIX = "fc_";
     private static final String UDP_STUN = "udp_stun";
+    private static final String UDP_ECHO = "udp_echo";
+    private static final int UDP_ECHO_PORT = 19302;
     @Resource private NodeService nodeService;
     @Resource private NodePortUsageService portUsageService;
     @Resource private ForwardChainProbeExecutor probeExecutor;
@@ -131,7 +133,7 @@ public class ForwardChainServiceImpl extends ServiceImpl<ForwardChainMapper, For
         retirePorts(retiredPorts, oldEndpointPorts, System.currentTimeMillis() + RETIRED_ENDPOINT_PORT_GRACE_MS);
         teardown(existing);
         copySettings(dto, existing);
-        boolean keepPath = (usesUdpStun(old) || usesUdpStun(existing)) && sameTopology(old, existing);
+        boolean keepPath = (usesUdpProbe(old) || usesUdpProbe(existing)) && sameTopology(old, existing);
         existing.setPathsJson("[]");
         existing.setEndpointPortsJson("{}");
         existing.setSelectedPathIndex(keepPath ? old.getSelectedPathIndex() : Integer.valueOf(0));
@@ -201,15 +203,17 @@ public class ForwardChainServiceImpl extends ServiceImpl<ForwardChainMapper, For
         if (!Arrays.asList("tls", "quic", "tcp", "udp").contains(dto.getProtocol())) return "节点链路协议仅支持TLS、QUIC、TCP或UDP";
         ForwardChain existing = excludeId == null ? null : getById(excludeId);
         if (dto.getProbeMode() == null) {
-            dto.setProbeMode("udp".equals(dto.getProtocol()) && existing != null && usesUdpStun(existing) ? UDP_STUN : "tcp");
+            dto.setProbeMode("udp".equals(dto.getProtocol()) && existing != null && usesUdpProbe(existing)
+                    ? existing.getProbeMode() : "tcp");
         }
-        boolean udpStun = UDP_STUN.equals(dto.getProbeMode());
-        boolean checkPortCapacity = udpStun || (existing != null && usesUdpStun(existing));
-        if (!udpStun && !"tcp".equals(dto.getProbeMode())) return "探测方式仅支持 TCP 建连或 UDP STUN";
-        if (udpStun && !"udp".equals(dto.getProtocol())) return "UDP STUN 探测需要使用原生 UDP 节点链路";
+        String probeMode = dto.getProbeMode();
+        boolean udpProbe = UDP_STUN.equals(probeMode) || UDP_ECHO.equals(probeMode);
+        boolean checkPortCapacity = udpProbe || (existing != null && usesUdpProbe(existing));
+        if (!udpProbe && !"tcp".equals(probeMode)) return "探测方式仅支持 TCP 建连、UDP STUN 或 UDP 回显";
+        if (udpProbe && !"udp".equals(dto.getProtocol())) return "UDP 探测需要使用原生 UDP 节点链路";
         Node entry = nodeService.getById(dto.getInNodeId());
         if (!usableNode(entry)) return "入口节点不存在或未连接";
-        if (udpStun && !WebSocketServer.supportsUdpStunProbe(entry.getId())) return udpStunUpgradeMessage(entry);
+        if (udpProbe && !supportsUdpProbe(entry, probeMode)) return udpProbeUpgradeMessage(entry, probeMode);
         Map<Long, Set<Integer>> usedPorts = new HashMap<>();
         mergePorts(usedPorts, portUsageService.collectUsedPorts(null, excludeId));
         // An update may move the entry onto a former hop; its listeners are still active until teardown.
@@ -239,18 +243,18 @@ public class ForwardChainServiceImpl extends ServiceImpl<ForwardChainMapper, For
                 if (!seenAcrossHops.add(nodeId)) return "同一节点不能在不同跳中重复使用：" + nodeId;
                 Node candidate = nodeService.getById(nodeId);
                 if (!usableNode(candidate)) return "存在不存在或未连接的候选节点：" + nodeId;
-                if (udpStun && !WebSocketServer.supportsUdpStunProbe(nodeId)) return udpStunUpgradeMessage(candidate);
+                if (udpProbe && !supportsUdpProbe(candidate, probeMode)) return udpProbeUpgradeMessage(candidate, probeMode);
                 if (checkPortCapacity) candidates.put(nodeId, candidate);
             }
         }
-        return checkPortCapacity ? validatePortCapacity(dto, candidates, usedPorts, udpStun) : null;
+        return checkPortCapacity ? validatePortCapacity(dto, candidates, usedPorts, udpProbe) : null;
     }
 
     private String validatePortCapacity(ForwardChainDto dto, Map<Long, Node> candidates,
-                                        Map<Long, Set<Integer>> usedPorts, boolean udpStun) {
-        // Segmented chains reserve one business port per distinct suffix, plus a probe port for STUN.
+                                        Map<Long, Set<Integer>> usedPorts, boolean udpProbe) {
+        // Segmented chains reserve one business port per distinct suffix, plus a UDP probe port when needed.
         boolean segmented = "udp".equals(dto.getProtocol()) || "quic".equals(dto.getProtocol());
-        int portsPerNode = udpStun ? 2 : 1;
+        int portsPerNode = udpProbe ? 2 : 1;
         List<ForwardChainDto.Hop> hops = dto.getHops();
         for (int i = hops.size() - 1; i >= 0; i--) {
             List<Long> nodeIds = hops.get(i).getNodeIds();
@@ -263,7 +267,7 @@ public class ForwardChainServiceImpl extends ServiceImpl<ForwardChainMapper, For
                     if (used >= start && used <= end) free--;
                 }
                 if (free < portsPerNode) {
-                    return "节点 " + node.getName() + " 可用端口不足，无法" + (udpStun ? "部署 UDP STUN 探测" : "重新部署转发链");
+                    return "节点 " + node.getName() + " 可用端口不足，无法" + (udpProbe ? "部署 UDP 探测" : "重新部署转发链");
                 }
             }
             if (segmented) portsPerNode = (int) Math.min(65536, (long) portsPerNode * nodeIds.size());
@@ -275,8 +279,14 @@ public class ForwardChainServiceImpl extends ServiceImpl<ForwardChainMapper, For
         return node != null && node.getStatus() != null && node.getStatus() == 1 && node.getServerIp() != null && !node.getServerIp().trim().isEmpty();
     }
 
-    private String udpStunUpgradeMessage(Node node) {
-        return "节点 " + node.getName() + " 尚不支持 UDP STUN 探测，请更新节点程序";
+    private boolean supportsUdpProbe(Node node, String probeMode) {
+        return UDP_ECHO.equals(probeMode) ? WebSocketServer.supportsUdpEchoProbe(node.getId()) :
+                WebSocketServer.supportsUdpStunProbe(node.getId());
+    }
+
+    private String udpProbeUpgradeMessage(Node node, String probeMode) {
+        String label = UDP_ECHO.equals(probeMode) ? "UDP 回显" : "UDP STUN";
+        return "节点 " + node.getName() + " 尚不支持 " + label + " 探测，请更新节点程序";
     }
 
     private void copySettings(ForwardChainDto dto, ForwardChain chain) {
@@ -360,7 +370,7 @@ public class ForwardChainServiceImpl extends ServiceImpl<ForwardChainMapper, For
      */
     private R deploySegmentedChain(ForwardChain chain, List<ForwardChainDto.Hop> hops, Map<Long, Set<Integer>> portsToAvoid) {
         boolean splitUdp = "udp".equals(chain.getProtocol());
-        boolean udpStun = usesUdpStun(chain);
+        boolean udpProbe = usesUdpProbe(chain);
         String linkProtocol = splitUdp ? "tcp" : "quic";
         String linkLabel = splitUdp ? "TCP配套" : "QUIC";
         List<List<Long>> combinations = new ArrayList<>();
@@ -390,9 +400,9 @@ public class ForwardChainServiceImpl extends ServiceImpl<ForwardChainMapper, For
                     endpoint.put("name", stageEndpointName(chain.getId(), hash));
                     if (splitUdp) endpoint.put("udpServiceName", stageEndpointName(chain.getId(), hash) + "_udp");
                     endpoint.put("port", port);
-                    if (udpStun) {
+                    if (udpProbe) {
                         Integer stunPort = allocateStagePort(node, used);
-                        if (stunPort == null) return R.err("节点 " + node.getName() + " 没有可用的 UDP STUN 探测中继端口");
+                        if (stunPort == null) return R.err("节点 " + node.getName() + " 没有可用的 UDP 探测中继端口");
                         endpoint.put("stunPort", stunPort);
                     }
                     endpoint.put("chainName", suffix.size() > 1 ? stageChainName(chain.getId(), hash) : null);
@@ -408,7 +418,7 @@ public class ForwardChainServiceImpl extends ServiceImpl<ForwardChainMapper, For
                 pathHop.put("nodeName", node.getName());
                 pathHop.put("host", node.getServerIp());
                 pathHop.put("port", endpoint.getInteger("port"));
-                if (udpStun && hopIndex == 0) pathHop.put("stunPort", endpoint.getInteger("stunPort"));
+                if (udpProbe && hopIndex == 0) pathHop.put("stunPort", endpoint.getInteger("stunPort"));
                 pathHop.put("endpointName", endpoint.getString("name"));
                 pathHop.put("suffixKey", suffixKey);
                 pathHops.add(pathHop);
@@ -481,7 +491,7 @@ public class ForwardChainServiceImpl extends ServiceImpl<ForwardChainMapper, For
         }
 
         Node entry = nodeService.getById(chain.getInNodeId());
-        String stunKey = udpStun ? udpStunKey(chain, entry) : null;
+        String stunKey = udpProbe ? udpStunKey(chain, entry) : null;
         for (JSONObject endpoint : endpoints.values()) {
             JSONArray suffix = endpoint.getJSONArray("suffixNodeIds");
             String targetHost;
@@ -508,11 +518,13 @@ public class ForwardChainServiceImpl extends ServiceImpl<ForwardChainMapper, For
                         endpoint.getInteger("port"), targetHost, targetPort);
                 if (!success(udpService)) return R.err("创建UDP中继服务失败：" + node.getName() + "，" + (udpService == null ? "节点无响应" : udpService.getMsg()));
             }
-            if (udpStun) {
+            if (udpProbe) {
                 String nextProbe = next == null ? null : formatAddress(targetHost, next.getInteger("stunPort"));
-                GostDto stunService = GostUtil.AddUdpStunStage(node.getId(), stunServiceName(endpoint),
-                        endpoint.getInteger("stunPort"), nextProbe, stunKey);
-                if (!success(stunService)) return R.err("创建 UDP STUN 探测中继失败：" + node.getName() + "，" + (stunService == null ? "节点无响应" : stunService.getMsg()));
+                String echoTarget = next == null && UDP_ECHO.equals(chain.getProbeMode())
+                        ? formatAddress(targetHost, UDP_ECHO_PORT) : null;
+                GostDto probeService = GostUtil.AddUdpProbeStage(node.getId(), stunServiceName(endpoint),
+                        endpoint.getInteger("stunPort"), nextProbe, echoTarget, stunKey);
+                if (!success(probeService)) return R.err("创建 UDP 探测中继失败：" + node.getName() + "，" + (probeService == null ? "节点无响应" : probeService.getMsg()));
             }
         }
 
@@ -769,7 +781,7 @@ public class ForwardChainServiceImpl extends ServiceImpl<ForwardChainMapper, For
         }
         try {
             // Collect the entire round before publishing results and choosing a path.
-            String stunKey = usesUdpStun(chain) ? udpStunKey(chain, nodeService.getById(chain.getInNodeId())) : null;
+            String stunKey = usesUdpProbe(chain) ? udpStunKey(chain, nodeService.getById(chain.getInNodeId())) : null;
             probeExecutor.probePaths(paths.size(), index -> probePath(chain, paths.getJSONObject(index), stunKey));
             return applyProbeResults(chain, paths);
         } catch (InterruptedException e) {
@@ -822,18 +834,19 @@ public class ForwardChainServiceImpl extends ServiceImpl<ForwardChainMapper, For
         path.put("latencyMs", null);
         path.put("error", "该路径探测未完成");
         try {
-            boolean udpStun = usesUdpStun(chain);
+            boolean udpProbe = usesUdpProbe(chain);
             GostDto result;
-            if (udpStun) {
+            if (udpProbe) {
                 JSONObject first = path.getJSONArray("hops").getJSONObject(0);
                 Integer port = first.getInteger("stunPort");
-                if (port == null) throw new IllegalStateException("路径缺少 UDP STUN 探测中继");
-                result = GostUtil.UdpStunThroughChain(entryId, formatAddress(first.getString("host"), port), stunKey, chain.getProbeTimeoutMs());
+                if (port == null) throw new IllegalStateException("路径缺少 UDP 探测中继");
+                result = GostUtil.UdpProbeThroughChain(entryId, formatAddress(first.getString("host"), port), stunKey,
+                        chain.getProbeTimeoutMs(), chain.getProbeMode());
             } else {
                 result = GostUtil.TcpPingThroughChain(entryId, path.getString("name"), chain.getTargetHost(), chain.getTargetPort(), chain.getProbeTimeoutMs());
             }
             JSONObject data = result == null || result.getData() == null ? new JSONObject() : JSON.parseObject(JSON.toJSONString(result.getData()));
-            Double latency = data.getDouble(udpStun ? "latencyMs" : "averageTime");
+            Double latency = data.getDouble(udpProbe ? "latencyMs" : "averageTime");
             boolean ok = success(result) && Boolean.TRUE.equals(data.getBoolean("success"))
                     && latency != null && Double.isFinite(latency) && latency >= 0;
             path.put("available", ok);
@@ -855,7 +868,7 @@ public class ForwardChainServiceImpl extends ServiceImpl<ForwardChainMapper, For
         return current != null && Objects.equals(current.getStatus(), 1)
                 && Objects.equals(snapshot.getUpdatedTime(), current.getUpdatedTime())
                 && sameTopology(snapshot, current)
-                && usesUdpStun(snapshot) == usesUdpStun(current)
+                && Objects.equals(snapshot.getProbeMode(), current.getProbeMode())
                 && Objects.equals(snapshot.getEndpointPortsJson(), current.getEndpointPortsJson());
     }
 
@@ -868,8 +881,8 @@ public class ForwardChainServiceImpl extends ServiceImpl<ForwardChainMapper, For
                 && Objects.equals(snapshot.getHopsJson(), current.getHopsJson());
     }
 
-    private boolean usesUdpStun(ForwardChain chain) {
-        return UDP_STUN.equals(chain.getProbeMode());
+    private boolean usesUdpProbe(ForwardChain chain) {
+        return UDP_STUN.equals(chain.getProbeMode()) || UDP_ECHO.equals(chain.getProbeMode());
     }
 
     private String udpStunKey(ForwardChain chain, Node entry) {

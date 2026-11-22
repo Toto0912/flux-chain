@@ -47,9 +47,9 @@ func Probe(ctx context.Context, firstHop string, key []byte) (time.Duration, err
 	return elapsed, err
 }
 
-// Relay accepts only an authenticated, short-lived Binding request. Only the
-// last node talks to Google. Relay replies have the same size as the request.
-func Relay(ctx context.Context, nextHop string, packet, key []byte) ([]byte, error) {
+// Relay accepts only an authenticated, short-lived probe. The last node checks
+// either the configured echo service or Google STUN before acknowledging it.
+func Relay(ctx context.Context, nextHop, echoTarget string, packet, key []byte) ([]byte, error) {
 	if !validSigned(packet, key, binding) {
 		return nil, nil
 	}
@@ -60,9 +60,17 @@ func Relay(ctx context.Context, nextHop string, packet, key []byte) ([]byte, err
 		return reply, err
 	}
 
-	_, _, err := exchange(ctx, GoogleAddress, packet[:stunHeaderLen], maxSTUNReply, func(reply []byte) bool {
-		return validBindingReply(reply, packet)
-	})
+	var err error
+	if echoTarget == "" {
+		_, _, err = exchange(ctx, GoogleAddress, packet[:stunHeaderLen], maxSTUNReply, func(reply []byte) bool {
+			return validBindingReply(reply, packet)
+		})
+	} else {
+		dialer := net.Dialer{}
+		_, err = ProbeFixedEcho(ctx, echoTarget, func(ctx context.Context, addr string) (net.Conn, error) {
+			return dialer.DialContext(ctx, "udp", addr)
+		})
+	}
 	if err != nil {
 		return nil, err
 	}

@@ -73,6 +73,8 @@ public interface ForwardService extends IService<Forward> {
      */
     R diagnoseForward(Long id);
 
+    R getTargetHealth(Long id);
+
     /**
      * 更新转发排序
      * @param params 包含forwards数组的参数
