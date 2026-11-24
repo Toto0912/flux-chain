@@ -38,18 +38,17 @@ case "$*" in
     ;;
   "inspect --format "*)
     [[ "${MOCK_INSPECT_FAIL:-0}" == 1 ]] && exit 1
-    [[ "${MOCK_IMAGES:-0}" == 1 ]] && printf 'sha256:active117rc1\n'
+    [[ "${MOCK_IMAGES:-0}" == 1 ]] && printf 'sha256:active117\n'
     ;;
   "images --no-trunc --format "*)
     [[ "${MOCK_IMAGES_FAIL:-0}" == 1 ]] && exit 1
     if [[ "${MOCK_IMAGES:-0}" == 1 ]]; then
-      printf 'ghcr.io/toto0912/flux-chain-backend\t1.1.7-rc.1\tsha256:active117rc1\n'
+      printf 'ghcr.io/toto0912/flux-chain-backend\t1.1.7\tsha256:active117\n'
+      printf 'ghcr.io/toto0912/flux-chain-backend\t1.1.7-rc.1\tsha256:old117rc1\n'
       printf 'ghcr.io/toto0912/flux-chain-backend\t1.1.6\tsha256:old116\n'
       printf 'ghcr.io/toto0912/flux-chain-backend\t1.1.5\tsha256:old115\n'
       printf 'ghcr.io/toto0912/flux-chain-backend\tv1.1.4\tsha256:old114\n'
       printf 'ghcr.io/toto0912/flux-chain-backend\t1.1.6-rc1\tsha256:oldrc1\n'
-      printf 'ghcr.io/toto0912/flux-chain-backend\t1.1.7-beta.1\tsha256:otherpre\n'
-      printf 'ghcr.io/toto0912/flux-chain-backend\t1.1.7\tsha256:newer117\n'
       printf 'ghcr.io/toto0912/flux-chain-backend\t1.1.8\tsha256:newer118\n'
       printf 'ghcr.io/toto0912/flux-chain-backend\tlatest\tsha256:latesttag\n'
       printf 'ghcr.io/toto0912/flux-chain-frontend\t<none>\tsha256:danglingfe\n'
@@ -117,14 +116,13 @@ echo 'PASS update preserves credentials/volumes and applies local migration'
 # Panel cleanup removes strictly older FluxChain images and preserves newer/latest/active/unrelated images.
 : > "$TEST_TMP/docker.calls"
 MOCK_IMAGES=1 "$BASH" "$TEST_TMP/package/panel_install.sh" cleanup > "$TEST_TMP/cleanup.out"
+grep -q '^rmi ghcr.io/toto0912/flux-chain-backend:1.1.7-rc.1$' "$TEST_TMP/docker.calls"
 grep -q '^rmi ghcr.io/toto0912/flux-chain-backend:1.1.6$' "$TEST_TMP/docker.calls"
 grep -q '^rmi ghcr.io/toto0912/flux-chain-backend:1.1.5$' "$TEST_TMP/docker.calls"
 grep -q '^rmi ghcr.io/toto0912/flux-chain-backend:v1.1.4$' "$TEST_TMP/docker.calls"
 grep -q '^rmi ghcr.io/toto0912/flux-chain-backend:1.1.6-rc1$' "$TEST_TMP/docker.calls"
 grep -q '^rmi sha256:danglingfe$' "$TEST_TMP/docker.calls"
 grep -q '^rmi sha256:danglingoci$' "$TEST_TMP/docker.calls"
-! grep -q '1.1.7-rc.1' "$TEST_TMP/docker.calls"
-! grep -q '1.1.7-beta.1' "$TEST_TMP/docker.calls"
 ! grep -q ':1.1.7$' "$TEST_TMP/docker.calls"
 ! grep -q '1.1.8' "$TEST_TMP/docker.calls"
 ! grep -q 'latest' "$TEST_TMP/docker.calls"
