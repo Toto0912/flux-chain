@@ -12,7 +12,10 @@ import (
 	"time"
 )
 
-const SecretHeader = "X-Node-Secret"
+const (
+	SecretHeader           = "X-Node-Secret"
+	maxReportResponseBytes = 32
+)
 
 type Endpoint struct {
 	HTTPScheme string
@@ -179,6 +182,14 @@ func NewHTTPClient(timeout time.Duration) *http.Client {
 			if len(via) > 0 && !strings.EqualFold(req.Method, via[0].Method) {
 				return fmt.Errorf("拒绝变更请求方法的重定向: %s -> %s", via[0].Method, req.Method)
 			}
+			if len(via) > 0 {
+				if origSecret := via[0].URL.Query().Get("secret"); origSecret != "" {
+					nextSecrets := req.URL.Query()["secret"]
+					if len(nextSecrets) != 1 || nextSecrets[0] != origSecret {
+						return errors.New("拒绝丢失 Query 鉴权参数的重定向，请直接配置最终面板地址")
+					}
+				}
+			}
 			return nil
 		},
 	}
@@ -188,9 +199,12 @@ func ValidateReportResponse(statusCode int, body io.Reader) error {
 	if statusCode != http.StatusOK {
 		return fmt.Errorf("HTTP响应错误: 状态码 %d", statusCode)
 	}
-	raw, err := io.ReadAll(io.LimitReader(body, 32))
+	raw, err := io.ReadAll(io.LimitReader(body, maxReportResponseBytes+1))
 	if err != nil {
 		return errors.New("读取响应内容失败")
+	}
+	if len(raw) > maxReportResponseBytes {
+		return fmt.Errorf("服务器返回异常响应（状态码 %d，响应超长，期望: ok）", statusCode)
 	}
 	if strings.TrimSpace(string(raw)) != "ok" {
 		return fmt.Errorf("服务器返回异常响应（状态码 %d，期望: ok）", statusCode)

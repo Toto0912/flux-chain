@@ -359,3 +359,127 @@ func TestValidateReportResponseDoesNotLeakBody(t *testing.T) {
 		t.Fatalf("unexpected 502 error message: %s", err502.Error())
 	}
 }
+
+func TestValidateReportResponseRejectsTruncatedOk(t *testing.T) {
+	if err := ValidateReportResponse(http.StatusOK, strings.NewReader("ok")); err != nil {
+		t.Fatalf("expected exact ok response to pass, got: %v", err)
+	}
+	if err := ValidateReportResponse(http.StatusOK, strings.NewReader(" ok\n")); err != nil {
+		t.Fatalf("expected trimmed ok response to pass, got: %v", err)
+	}
+
+	paddedWithError := "ok" + strings.Repeat(" ", 30) + "ERROR secret=synth-secret-999"
+	errLong := ValidateReportResponse(http.StatusOK, strings.NewReader(paddedWithError))
+	if errLong == nil {
+		t.Fatal("expected oversized response whose prefix trims to ok to fail")
+	}
+	if !strings.Contains(errLong.Error(), "200") || !strings.Contains(errLong.Error(), "超长") ||
+		strings.Contains(errLong.Error(), "ERROR") || strings.Contains(errLong.Error(), "synth-secret-999") {
+		t.Fatalf("unexpected oversized response error message: %s", errLong.Error())
+	}
+
+	paddedSpacesOnly := "ok" + strings.Repeat(" ", 31)
+	if err := ValidateReportResponse(http.StatusOK, strings.NewReader(paddedSpacesOnly)); err == nil {
+		t.Fatal("expected 33-byte padded ok response to fail")
+	}
+}
+
+func TestNewHTTPClientRejectsLegacyQuerySecretLossOnRedirect(t *testing.T) {
+	const legacySecret = "legacy-secret+123="
+	var noQueryHits, wrongQueryHits int
+	var withQueryMethod, withQueryBody, withQueryHeader, withQueryParam string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/drop":
+			http.Redirect(w, r, "/target-no-query", http.StatusTemporaryRedirect)
+		case "/target-no-query":
+			noQueryHits++
+			_, _ = w.Write([]byte("ok"))
+		case "/wrong":
+			http.Redirect(w, r, "/target-wrong-query?secret=other", http.StatusTemporaryRedirect)
+		case "/target-wrong-query":
+			wrongQueryHits++
+			_, _ = w.Write([]byte("ok"))
+		case "/keep":
+			http.Redirect(w, r, "/target-with-query?secret="+url.QueryEscape(legacySecret), http.StatusTemporaryRedirect)
+		case "/target-with-query":
+			raw, _ := io.ReadAll(r.Body)
+			withQueryMethod = r.Method
+			withQueryBody = string(raw)
+			withQueryHeader = r.Header.Get(SecretHeader)
+			withQueryParam = r.URL.Query().Get("secret")
+			_, _ = w.Write([]byte("ok"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	ep, err := Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := NewHTTPClient(5 * time.Second)
+	payload := `{"n":"svc","u":42}`
+
+	dropReq, err := ep.NewReportRequest(context.Background(), "/drop", []byte(payload), legacySecret, "ua", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp, err := client.Do(dropReq); err == nil {
+		resp.Body.Close()
+		t.Fatal("expected legacy query redirect losing secret parameter to be rejected")
+	} else {
+		if !strings.Contains(err.Error(), "Query") || !strings.Contains(err.Error(), "最终面板地址") {
+			t.Fatalf("expected query redirect guidance error, got: %v", err)
+		}
+		sanitized := SanitizeError(err, legacySecret)
+		if strings.Contains(sanitized, legacySecret) || strings.Contains(sanitized, url.QueryEscape(legacySecret)) {
+			t.Fatalf("SanitizeError leaked legacy secret: %s", sanitized)
+		}
+	}
+	if noQueryHits != 0 {
+		t.Fatalf("expected /target-no-query not to be contacted on rejected legacy redirect, got %d hits", noQueryHits)
+	}
+
+	wrongReq, err := ep.NewReportRequest(context.Background(), "/wrong", []byte(payload), legacySecret, "ua", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp, err := client.Do(wrongReq); err == nil {
+		resp.Body.Close()
+		t.Fatal("expected legacy query redirect with mismatched secret parameter to be rejected")
+	}
+	if wrongQueryHits != 0 {
+		t.Fatalf("expected /target-wrong-query not to be contacted on mismatched legacy redirect, got %d hits", wrongQueryHits)
+	}
+
+	keepReq, err := ep.NewReportRequest(context.Background(), "/keep", []byte(payload), legacySecret, "ua", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keepResp, err := client.Do(keepReq)
+	if err != nil {
+		t.Fatalf("expected legacy query redirect preserving matching secret to succeed, got: %v", err)
+	}
+	keepResp.Body.Close()
+	if withQueryMethod != http.MethodPost || withQueryBody != payload ||
+		withQueryHeader != legacySecret || withQueryParam != legacySecret {
+		t.Fatalf("unexpected legacy preserved redirect request: method=%s body=%q header=%q query=%q",
+			withQueryMethod, withQueryBody, withQueryHeader, withQueryParam)
+	}
+
+	headerReq, err := ep.NewReportRequest(context.Background(), "/drop", []byte(payload), legacySecret, "ua", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	headerResp, err := client.Do(headerReq)
+	if err != nil {
+		t.Fatalf("expected header-only 307 redirect without query secret to succeed, got: %v", err)
+	}
+	headerResp.Body.Close()
+	if noQueryHits != 1 {
+		t.Fatalf("expected /target-no-query to be hit once in header-only mode, got %d", noQueryHits)
+	}
+}
