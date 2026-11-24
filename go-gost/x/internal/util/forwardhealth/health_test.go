@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/go-gost/core/chain"
@@ -16,9 +17,36 @@ func TestFixedEchoGroupsPortsByHost(t *testing.T) {
 	nodes := []*config.ForwardNodeConfig{{Addr: "edge.example:1000"}, {Addr: "[2001:db8::1]:2000"}, {Addr: "edge.example:3000"}}
 	validKey := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	if _, err := New(&config.ForwardTargetHealthConfig{
-		UDPMode: "echo_fixed", IntervalSeconds: 5, TimeoutSeconds: 1, SwitchThresholdMs: 1,
+		UDPMode: "echo_fixed", UDPEchoKey: "bad-key", IntervalSeconds: 5, TimeoutSeconds: 1, SwitchThresholdMs: 1,
 	}, nodes, "latency", "udp", nil); err == nil {
-		t.Fatal("expected echo_fixed without udpEchoKey to fail")
+		t.Fatal("expected echo_fixed with invalid non-empty udpEchoKey to fail")
+	}
+	dialed := false
+	legacy, err := New(&config.ForwardTargetHealthConfig{
+		UDPMode: "echo_fixed", IntervalSeconds: 5, TimeoutSeconds: 1, SwitchThresholdMs: 1,
+	}, nodes, "latency", "udp", func(_ context.Context, _, _ string) (net.Conn, error) {
+		dialed = true
+		return nil, errors.New("unexpected dial")
+	})
+	if err != nil {
+		t.Fatalf("expected legacy echo_fixed without udpEchoKey to initialize, got %v", err)
+	}
+	legacy.runRound(context.Background())
+	if dialed {
+		t.Fatal("expected legacy echo_fixed without udpEchoKey not to dial")
+	}
+	legacyStatus := legacy.Status()["udp"]
+	if !legacyStatus.AllUnavailable || len(legacyStatus.Targets) != len(nodes) {
+		t.Fatalf("expected allUnavailable legacy status with %d targets, got %+v", len(nodes), legacyStatus)
+	}
+	for _, sample := range legacyStatus.Targets {
+		if sample.Available || !strings.Contains(sample.Error, "UDP 回显探测密钥缺失") {
+			t.Fatalf("expected missing key error on target %+v", sample)
+		}
+	}
+	chainNodes := []*chain.Node{chain.NewNode("n1", "edge.example:1000"), chain.NewNode("n2", "[2001:db8::1]:2000")}
+	if selected, handled := legacy.Select(context.Background(), "udp", chainNodes); !handled || selected == nil {
+		t.Fatalf("expected legacy monitor Select to still return a forwarding node, got handled=%v selected=%v", handled, selected)
 	}
 	for _, invalidPort := range []int{-1, 70000} {
 		if _, err := New(&config.ForwardTargetHealthConfig{

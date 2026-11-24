@@ -3,6 +3,7 @@ package stunprobe
 import (
 	"context"
 	"net"
+	"strings"
 
 	"github.com/go-gost/core/handler"
 	md "github.com/go-gost/core/metadata"
@@ -35,11 +36,14 @@ func (h *probeHandler) Init(metadata md.Metadata) error {
 	}
 	h.key = key
 	if h.echoTarget != "" {
-		echoKey, err := stunprobe.ParseEchoKey(mdutil.GetString(metadata, "udpEchoKey"))
-		if err != nil {
-			return err
+		rawEchoKey := strings.TrimSpace(mdutil.GetString(metadata, "udpEchoKey"))
+		if rawEchoKey != "" {
+			echoKey, err := stunprobe.ParseEchoKey(rawEchoKey)
+			if err != nil {
+				return err
+			}
+			h.echoKey = echoKey
 		}
-		h.echoKey = echoKey
 	}
 	return nil
 }

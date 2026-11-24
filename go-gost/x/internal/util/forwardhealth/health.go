@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -88,11 +89,13 @@ func New(check *config.ForwardTargetHealthConfig, nodes []*config.ForwardNodeCon
 		if check.UDPEchoPort != 0 && (check.UDPEchoPort < 1 || check.UDPEchoPort > 65535) {
 			return nil, errors.New("UDP 回显端口必须在 1 到 65535 之间")
 		}
-		echoKey, err := stunprobe.ParseEchoKey(check.UDPEchoKey)
-		if err != nil {
-			return nil, err
+		if strings.TrimSpace(check.UDPEchoKey) != "" {
+			echoKey, err := stunprobe.ParseEchoKey(check.UDPEchoKey)
+			if err != nil {
+				return nil, err
+			}
+			m.echoKey = echoKey
 		}
-		m.echoKey = echoKey
 	}
 	for _, node := range nodes {
 		if node == nil {

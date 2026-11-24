@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"net"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/go-gost/x/internal/net/udp"
 	"github.com/go-gost/x/internal/util/stunprobe"
 	"github.com/go-gost/x/logger"
+	xmetadata "github.com/go-gost/x/metadata"
 )
 
 func TestListenerSurvivesProbeDeadline(t *testing.T) {
@@ -75,5 +77,42 @@ func TestListenerSurvivesProbeDeadline(t *testing.T) {
 			// The next request arrives after the first handler's deadline.
 			time.Sleep(requestTimeout + 50*time.Millisecond)
 		}
+	}
+}
+
+func TestInitAllowsLegacyEchoTargetWithoutKey(t *testing.T) {
+	stunKey := hex.EncodeToString(bytes.Repeat([]byte{1}, sha256.Size))
+	echoKey := hex.EncodeToString(bytes.Repeat([]byte{2}, sha256.Size))
+
+	h := &probeHandler{}
+	if err := h.Init(xmetadata.NewMetadata(map[string]any{
+		"fluxchainStunKey": stunKey,
+		"echoTarget":       "198.51.100.1:19302",
+	})); err != nil {
+		t.Fatalf("expected legacy echoTarget without udpEchoKey to initialize, got err: %v", err)
+	}
+	if len(h.echoKey) != 0 {
+		t.Fatalf("expected empty echoKey for legacy metadata, got %d bytes", len(h.echoKey))
+	}
+
+	hInvalid := &probeHandler{}
+	if err := hInvalid.Init(xmetadata.NewMetadata(map[string]any{
+		"fluxchainStunKey": stunKey,
+		"echoTarget":       "198.51.100.1:19302",
+		"udpEchoKey":       "invalid",
+	})); err == nil {
+		t.Fatal("expected invalid non-empty udpEchoKey to fail")
+	}
+
+	hValid := &probeHandler{}
+	if err := hValid.Init(xmetadata.NewMetadata(map[string]any{
+		"fluxchainStunKey": stunKey,
+		"echoTarget":       "198.51.100.1:19302",
+		"udpEchoKey":       echoKey,
+	})); err != nil {
+		t.Fatalf("expected valid udpEchoKey to initialize, got err: %v", err)
+	}
+	if len(hValid.echoKey) != sha256.Size {
+		t.Fatalf("expected %d-byte echoKey, got %d", sha256.Size, len(hValid.echoKey))
 	}
 }

@@ -128,6 +128,9 @@ func ProbeEcho(ctx context.Context, address string, dial DialUDP) (time.Duration
 
 // ProbeFixedEcho checks a target running the standalone FluxChain echo service.
 func ProbeFixedEcho(ctx context.Context, address string, key []byte, dial DialUDP) (time.Duration, error) {
+	if len(key) == 0 {
+		return 0, errors.New("UDP 回显探测密钥缺失，请在面板重新保存该转发/转发链配置以同步密钥")
+	}
 	if len(key) != sha256.Size {
 		return 0, errors.New("UDP 回显探测密钥无效")
 	}
