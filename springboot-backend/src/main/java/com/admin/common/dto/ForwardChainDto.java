@@ -21,6 +21,8 @@ public class ForwardChainDto {
     private Integer targetPort;
     private String protocol = "tls";
     private String probeMode;
+    @Min(1) @Max(65535)
+    private Integer udpEchoPort;
     @NotEmpty
     private List<Hop> hops;
     @Min(MIN_PROBE_INTERVAL_MS) @Max(3600000)

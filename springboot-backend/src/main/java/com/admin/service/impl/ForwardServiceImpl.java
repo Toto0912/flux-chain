@@ -10,6 +10,7 @@ import com.admin.common.lang.R;
 import com.admin.common.utils.GostUtil;
 import com.admin.common.utils.ForwardLoopGuard;
 import com.admin.common.utils.JwtUtil;
+import com.admin.common.utils.UdpEchoKeyUtil;
 import com.admin.common.utils.WebSocketServer;
 import com.admin.entity.*;
 import com.admin.mapper.ForwardMapper;
@@ -558,6 +559,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
                 }
                 Node targetSource = outNode == null ? inNode : outNode;
                 String description = outNode == null ? "入口 → 目标（UDP 回显）" : "出口 → 目标（UDP 回显）";
+                int echoPort = normalizeUdpEchoPort(forward.getUdpEchoPort());
                 Set<String> seenHosts = new LinkedHashSet<>();
                 for (String[] target : parsedTargets) {
                     seenHosts.add(target[0]);
@@ -568,7 +570,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
                         skippedCount++;
                         continue;
                     }
-                    results.add(probeUdpEcho(targetSource, targetIp, forward.getInterfaceName(), description));
+                    results.add(probeUdpEcho(targetSource, targetIp, echoPort, forward.getInterfaceName(), description));
                 }
             } else {
                 if (outNode != null) {
@@ -652,8 +654,8 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
             return "节点 " + node.getName() + " 需要在线并升级到支持出口 STUN 探测的版本";
         }
         if (ForwardTargetHealthConfig.FIXED_ECHO.equals(settings.getUdpMode()) &&
-                !WebSocketServer.supportsUdpEchoProbe(node.getId())) {
-            return "节点 " + node.getName() + " 需要在线并升级到支持 UDP 回显的版本";
+                (!WebSocketServer.supportsUdpEchoProbe(node.getId()) || !WebSocketServer.supportsUdpEchoAuth(node.getId()))) {
+            return "节点 " + node.getName() + " 需要在线并升级到支持密钥鉴权 UDP 回显的版本";
         }
         return WebSocketServer.supportsForwardTargetHealth(node.getId()) ? null :
                 "节点 " + node.getName() + " 需要在线并升级到支持目标健康检查的版本";
@@ -755,16 +757,21 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         return result;
     }
 
-    private DiagnosisResult probeUdpEcho(Node node, String targetHost, String interfaceName, String description) {
-        DiagnosisResult result = newUdpDiagnosis(node, targetHost, UDP_ECHO_PORT, description);
-        if (!WebSocketServer.supportsForwardUdpEcho(node.getId())) {
-            result.setMessage("节点 " + node.getName() + " 需要在线并升级到支持转发 UDP 回显探测的版本");
+    private static int normalizeUdpEchoPort(Integer port) {
+        return port != null && port >= 1 && port <= 65535 ? port : UDP_ECHO_PORT;
+    }
+
+    private DiagnosisResult probeUdpEcho(Node node, String targetHost, int echoPort, String interfaceName, String description) {
+        DiagnosisResult result = newUdpDiagnosis(node, targetHost, echoPort, description);
+        if (!WebSocketServer.supportsForwardUdpEcho(node.getId()) || !WebSocketServer.supportsUdpEchoAuth(node.getId())) {
+            result.setMessage("节点 " + node.getName() + " 需要在线并升级到支持密钥鉴权 UDP 回显探测的版本");
             return result;
         }
         String targetAddress = targetHost.contains(":") && !targetHost.startsWith("[")
-                ? "[" + targetHost + "]:" + UDP_ECHO_PORT
-                : targetHost + ":" + UDP_ECHO_PORT;
-        GostDto response = GostUtil.ProbeForwardUdpEcho(node.getId(), targetAddress, interfaceName, UDP_PROBE_TIMEOUT_MS);
+                ? "[" + targetHost + "]:" + echoPort
+                : targetHost + ":" + echoPort;
+        GostDto response = GostUtil.ProbeForwardUdpEcho(
+                node.getId(), targetAddress, interfaceName, UDP_PROBE_TIMEOUT_MS, UdpEchoKeyUtil.getEchoKey());
         applyUdpLatency(result, response, "latencyMs");
         return result;
     }
@@ -1237,6 +1244,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         // 先复制DTO的属性，再设置其他属性，避免被覆盖
         BeanUtils.copyProperties(forwardDto, forward);
         forward.setProbeMode(Objects.toString(forwardDto.getProbeMode(), TCP_PROBE));
+        forward.setUdpEchoPort(normalizeUdpEchoPort(forwardDto.getUdpEchoPort()));
         ForwardTargetHealthConfig health = ForwardTargetHealthConfig.validate(
                 forwardDto.getTargetHealth(), forward.getRemoteAddr(), forward.getStrategy());
         if (health != null) forward.setTargetHealthConfig(JSON.toJSONString(health));
@@ -1259,6 +1267,13 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         forward.setUserId(existForward.getUserId());
         if (forwardUpdateDto.getProbeMode() == null) {
             forward.setProbeMode(existForward.getProbeMode());
+        }
+        if (forwardUpdateDto.getUdpEchoPort() != null) {
+            forward.setUdpEchoPort(forwardUpdateDto.getUdpEchoPort());
+        } else if (forwardUpdateDto.getProbeMode() != null) {
+            forward.setUdpEchoPort(UDP_ECHO_PORT);
+        } else {
+            forward.setUdpEchoPort(normalizeUdpEchoPort(existForward.getUdpEchoPort()));
         }
         if (forwardUpdateDto.getStrategy() == null) {
             forward.setStrategy(existForward.getStrategy());

@@ -524,7 +524,7 @@ func (w *WebSocketReporter) routeCommand(cmd CommandMessage) {
 			fmt.Println("Error marshaling JSON:", errs)
 			return
 		}
-		if bytes.Contains(jsonBytes, []byte(`"fluxchainStunKey"`)) {
+		if bytes.Contains(jsonBytes, []byte(`"fluxchainStunKey"`)) || bytes.Contains(jsonBytes, []byte(`"udpEchoKey"`)) {
 			fmt.Println("🔔 收到命令: ", cmd.Type)
 		} else {
 			fmt.Println("🔔 收到命令: ", string(jsonBytes))
@@ -1135,7 +1135,7 @@ func StartWebSocketReporterWithConfig(addr string, secret string, http int, tls 
 	return reporter
 }
 
-const probeCapabilities = "&udpStunProbe=1&forwardUdpStun=1&forwardTargetHealth=1&udpEchoProbe=1&forwardEgressStun=1&forwardUdpEcho=1"
+const probeCapabilities = "&udpStunProbe=1&forwardUdpStun=1&forwardTargetHealth=1&udpEchoProbe=1&forwardEgressStun=1&forwardUdpEcho=1&udpEchoAuth=1"
 
 func (w *WebSocketReporter) handleUdpStunProbe(data interface{}) (interface{}, error) {
 	var request struct {
@@ -1169,7 +1169,7 @@ func (w *WebSocketReporter) handleUdpStunProbe(data interface{}) (interface{}, e
 	if err != nil {
 		if request.Mode == "udp_echo" {
 			if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
-				return nil, fmt.Errorf("未收到目标服务器的 UDP 回显（19302/UDP 探测超时）")
+				return nil, fmt.Errorf("未收到目标服务器的 UDP 回显（探测超时，请检查目标端口服务状态与密钥）")
 			}
 			return nil, fmt.Errorf("UDP 回显探测失败：%w", err)
 		}

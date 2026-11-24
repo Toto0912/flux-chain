@@ -339,7 +339,9 @@ public class GostUtil {
         selector.put("failTimeout", "600s");
         forwarder.put("selector", selector);
         if (health != null) {
-            forwarder.put("targetHealth", health.nodeSettings(targets));
+            String echoKey = ForwardTargetHealthConfig.FIXED_ECHO.equals(health.getUdpMode())
+                    ? UdpEchoKeyUtil.getEchoKey() : null;
+            forwarder.put("targetHealth", health.nodeSettings(targets, echoKey));
         }
         return forwarder;
     }
@@ -436,10 +438,17 @@ public class GostUtil {
     }
 
     public static GostDto AddUdpProbeStage(Long nodeId, String name, int port, String nextHop, String echoTarget, String key) {
+        return AddUdpProbeStage(nodeId, name, port, nextHop, echoTarget, key, null);
+    }
+
+    public static GostDto AddUdpProbeStage(Long nodeId, String name, int port, String nextHop, String echoTarget, String key, String echoKey) {
         JSONObject metadata = new JSONObject();
         metadata.put("fluxchainStunKey", key);
         if (nextHop != null) metadata.put("nextHop", nextHop);
-        if (echoTarget != null) metadata.put("echoTarget", echoTarget);
+        if (echoTarget != null) {
+            metadata.put("echoTarget", echoTarget);
+            if (StringUtils.isNotBlank(echoKey)) metadata.put("udpEchoKey", echoKey);
+        }
         JSONObject handler = new JSONObject();
         handler.put("type", "fluxchain-stun");
         handler.put("metadata", metadata);
@@ -572,11 +581,14 @@ public class GostUtil {
         return WebSocketServer.send_msg(nodeId, data, "ForwardUdpStun");
     }
 
-    public static GostDto ProbeForwardUdpEcho(Long nodeId, String target, String interfaceName, int timeoutMs) {
+    public static GostDto ProbeForwardUdpEcho(Long nodeId, String target, String interfaceName, int timeoutMs, String echoKey) {
         JSONObject data = new JSONObject();
         data.put("mode", "udp_echo");
         data.put("target", target);
         data.put("timeout", timeoutMs);
+        if (StringUtils.isNotBlank(echoKey)) {
+            data.put("udpEchoKey", echoKey);
+        }
         if (StringUtils.isNotBlank(interfaceName)) {
             data.put("interface", interfaceName);
         }

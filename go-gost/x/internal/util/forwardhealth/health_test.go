@@ -14,8 +14,21 @@ import (
 
 func TestFixedEchoGroupsPortsByHost(t *testing.T) {
 	nodes := []*config.ForwardNodeConfig{{Addr: "edge.example:1000"}, {Addr: "[2001:db8::1]:2000"}, {Addr: "edge.example:3000"}}
-	m, err := New(&config.ForwardTargetHealthConfig{
+	validKey := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	if _, err := New(&config.ForwardTargetHealthConfig{
 		UDPMode: "echo_fixed", IntervalSeconds: 5, TimeoutSeconds: 1, SwitchThresholdMs: 1,
+	}, nodes, "latency", "udp", nil); err == nil {
+		t.Fatal("expected echo_fixed without udpEchoKey to fail")
+	}
+	for _, invalidPort := range []int{-1, 70000} {
+		if _, err := New(&config.ForwardTargetHealthConfig{
+			UDPMode: "echo_fixed", UDPEchoKey: validKey, UDPEchoPort: invalidPort, IntervalSeconds: 5, TimeoutSeconds: 1, SwitchThresholdMs: 1,
+		}, nodes, "latency", "udp", nil); err == nil {
+			t.Fatalf("expected invalid udpEchoPort %d to fail", invalidPort)
+		}
+	}
+	m, err := New(&config.ForwardTargetHealthConfig{
+		UDPMode: "echo_fixed", UDPEchoKey: validKey, IntervalSeconds: 5, TimeoutSeconds: 1, SwitchThresholdMs: 1,
 	}, nodes, "latency", "udp", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -26,6 +39,20 @@ func TestFixedEchoGroupsPortsByHost(t *testing.T) {
 	}
 	if got := m.findProbe("udp").destinations; !reflect.DeepEqual(got, want) {
 		t.Fatalf("expected %v, got %v", want, got)
+	}
+
+	custom, err := New(&config.ForwardTargetHealthConfig{
+		UDPMode: "echo_fixed", UDPEchoKey: validKey, UDPEchoPort: 29302, IntervalSeconds: 5, TimeoutSeconds: 1, SwitchThresholdMs: 1,
+	}, nodes, "latency", "udp", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCustom := []probeDestination{
+		{address: "edge.example:29302", targetIndexes: []int{0, 2}},
+		{address: "[2001:db8::1]:29302", targetIndexes: []int{1}},
+	}
+	if got := custom.findProbe("udp").destinations; !reflect.DeepEqual(got, wantCustom) {
+		t.Fatalf("expected %v, got %v", wantCustom, got)
 	}
 }
 

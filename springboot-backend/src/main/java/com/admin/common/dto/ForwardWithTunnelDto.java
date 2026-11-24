@@ -89,6 +89,8 @@ public class ForwardWithTunnelDto {
 
     private String probeMode;
 
+    private Integer udpEchoPort;
+
     @JsonIgnore
     private String targetHealthConfig;
 

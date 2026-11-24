@@ -49,7 +49,7 @@ func Probe(ctx context.Context, firstHop string, key []byte) (time.Duration, err
 
 // Relay accepts only an authenticated, short-lived probe. The last node checks
 // either the configured echo service or Google STUN before acknowledging it.
-func Relay(ctx context.Context, nextHop, echoTarget string, packet, key []byte) ([]byte, error) {
+func Relay(ctx context.Context, nextHop, echoTarget string, packet, key, echoKey []byte) ([]byte, error) {
 	if !validSigned(packet, key, binding) {
 		return nil, nil
 	}
@@ -67,7 +67,7 @@ func Relay(ctx context.Context, nextHop, echoTarget string, packet, key []byte) 
 		})
 	} else {
 		dialer := net.Dialer{}
-		_, err = ProbeFixedEcho(ctx, echoTarget, func(ctx context.Context, addr string) (net.Conn, error) {
+		_, err = ProbeFixedEcho(ctx, echoTarget, echoKey, func(ctx context.Context, addr string) (net.Conn, error) {
 			return dialer.DialContext(ctx, "udp", addr)
 		})
 	}

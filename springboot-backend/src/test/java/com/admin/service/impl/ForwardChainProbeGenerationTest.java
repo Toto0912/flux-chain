@@ -58,6 +58,16 @@ class ForwardChainProbeGenerationTest {
         staleProbeDoesNotWrite(stun, echo);
     }
 
+    @Test void changingUdpEchoPortRejectsInFlightProbes() {
+        ForwardChain defaultPort = chain("udp", "{\"2\":28200}");
+        defaultPort.setProbeMode("udp_echo");
+        defaultPort.setUdpEchoPort(19302);
+        ForwardChain customPort = chain("udp", "{\"2\":28200}");
+        customPort.setProbeMode("udp_echo");
+        customPort.setUdpEchoPort(29302);
+        staleProbeDoesNotWrite(defaultPort, customPort);
+    }
+
     @Test void pausedChainRejectsInFlightProbes() {
         ForwardChain current = chain("udp", "{\"2\":28200}");
         current.setStatus(0);

@@ -26,6 +26,10 @@ public class ForwardDto {
     @Pattern(regexp = "tcp|udp_stun|udp_echo", message = "诊断方式仅支持 TCP 建连、UDP STUN 或 UDP 回显")
     private String probeMode;
 
+    @Min(value = 1, message = "UDP 回显端口不能小于1")
+    @Max(value = 65535, message = "UDP 回显端口不能大于65535")
+    private Integer udpEchoPort;
+
     private ForwardTargetHealthConfig targetHealth;
     
     /**

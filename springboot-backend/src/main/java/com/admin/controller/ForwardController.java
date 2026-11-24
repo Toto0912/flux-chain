@@ -5,6 +5,7 @@ import com.admin.common.annotation.RequireRole;
 import com.admin.common.dto.ForwardDto;
 import com.admin.common.dto.ForwardUpdateDto;
 import com.admin.common.lang.R;
+import com.admin.common.utils.UdpEchoKeyUtil;
 import com.admin.service.ForwardService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.validation.annotation.Validated;
@@ -97,6 +98,11 @@ public class ForwardController extends BaseController {
         Long forwardId = params.get("forwardId");
         if (forwardId == null) return R.err("转发 ID 不能为空");
         return withPermit(healthStatusRequests, "探测结果查询繁忙，请稍后重试", () -> forwardService.getTargetHealth(forwardId));
+    }
+
+    @PostMapping("/udp-echo-key")
+    public R udpEchoKey() {
+        return R.ok(Map.of("key", UdpEchoKeyUtil.getEchoKey()));
     }
 
     private R withPermit(Semaphore permits, String busy, Supplier<R> operation) {

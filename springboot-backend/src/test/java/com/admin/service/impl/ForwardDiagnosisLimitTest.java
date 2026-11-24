@@ -2,6 +2,7 @@ package com.admin.service.impl;
 
 import com.admin.common.lang.R;
 import com.admin.common.utils.JwtUtil;
+import com.admin.common.utils.UdpEchoKeyUtil;
 import com.admin.controller.ForwardController;
 import com.admin.entity.Forward;
 import com.admin.entity.Node;
@@ -34,6 +35,7 @@ class ForwardDiagnosisLimitTest {
     @BeforeEach
     void setUp() {
         ReflectionTestUtils.setField(JwtUtil.class, "SECRET_KEY", "test-secret-key");
+        ReflectionTestUtils.setField(UdpEchoKeyUtil.class, "SECRET_KEY", "test-secret-key");
     }
 
     @AfterEach

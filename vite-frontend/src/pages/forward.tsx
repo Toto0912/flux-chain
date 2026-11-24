@@ -47,7 +47,7 @@ import {
 } from "@/api";
 import { JwtUtil } from "@/utils/jwt";
 import { defaultTargetHealth, TargetHealthDialog, TargetHealthFields, type TargetHealthSettings } from "@/components/forward-target-health";
-import { UDP_ECHO_PORT, UdpEchoInstall } from "@/components/udp-echo-install";
+import { parseUdpEchoPort, UDP_ECHO_PORT, UdpEchoInstall } from "@/components/udp-echo-install";
 
 interface Forward {
   id: number;
@@ -63,6 +63,7 @@ interface Forward {
   inFlow: number;
   outFlow: number;
   probeMode?: ForwardProbeMode;
+  udpEchoPort?: number;
   targetHealth?: TargetHealthSettings;
   serviceRunning: boolean;
   createdTime: string;
@@ -88,6 +89,7 @@ interface ForwardForm {
   interfaceName?: string;
   strategy: string;
   probeMode?: ForwardProbeMode;
+  udpEchoPort: string;
   targetHealth?: TargetHealthSettings;
 }
 
@@ -211,7 +213,8 @@ export default function ForwardPage() {
     inPort: null,
     remoteAddr: '',
     interfaceName: '',
-    strategy: 'fifo'
+    strategy: 'fifo',
+    udpEchoPort: ''
   });
   
   // 表单验证错误
@@ -450,6 +453,19 @@ export default function ForwardPage() {
         newErrors.inPort = `端口号必须在${selectedTunnel.inNodePortSta}-${selectedTunnel.inNodePortEnd}范围内`;
       }
     }
+
+    const targetsCount = form.remoteAddr.split('\n').map(addr => addr.trim()).filter(Boolean).length;
+    const healthEnabled = targetsCount > 1 && Boolean(form.targetHealth?.enabled);
+    if (!healthEnabled && form.probeMode === "udp_echo" && !parseUdpEchoPort(form.udpEchoPort).valid) {
+      newErrors.udpEchoPort = 'UDP 回显端口必须为1-65535之间的整数';
+    }
+    if (healthEnabled && form.targetHealth?.udpMode === "echo_fixed" && form.targetHealth.udpEchoPort != null) {
+      const p = form.targetHealth.udpEchoPort;
+      if (!Number.isInteger(p) || p < 1 || p > 65535) {
+        toast.error('UDP 回显端口必须为1-65535之间的整数');
+        return false;
+      }
+    }
     
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -464,7 +480,8 @@ export default function ForwardPage() {
       inPort: null,
       remoteAddr: '',
       interfaceName: '',
-      strategy: 'fifo'
+      strategy: 'fifo',
+      udpEchoPort: '',
     });
     setSelectedTunnel(null);
     setErrors({});
@@ -484,6 +501,7 @@ export default function ForwardPage() {
       interfaceName: forward.interfaceName || '',
       strategy: forward.strategy || 'fifo',
       probeMode: forward.probeMode ?? "tcp",
+      udpEchoPort: forward.udpEchoPort && forward.udpEchoPort !== UDP_ECHO_PORT ? String(forward.udpEchoPort) : '',
       targetHealth: forward.targetHealth,
     });
     const tunnel = tunnels.find(t => t.id === forward.tunnelId);
@@ -552,6 +570,7 @@ export default function ForwardPage() {
 
       const addressCount = processedRemoteAddr.split(',').length;
       const targetHealth = addressCount > 1 && form.targetHealth?.enabled ? form.targetHealth : { enabled: false };
+      const parsedEchoPort = parseUdpEchoPort(form.udpEchoPort).port;
       
       let res;
       if (isEdit) {
@@ -566,7 +585,8 @@ export default function ForwardPage() {
           interfaceName: form.interfaceName,
           strategy: addressCount > 1 ? form.strategy : 'fifo',
           targetHealth,
-          probeMode: form.probeMode ?? "tcp"
+          probeMode: form.probeMode ?? "tcp",
+          udpEchoPort: parsedEchoPort,
         };
         res = await updateForward(updateData);
       } else {
@@ -579,7 +599,8 @@ export default function ForwardPage() {
           interfaceName: form.interfaceName,
           strategy: addressCount > 1 ? form.strategy : 'fifo',
           targetHealth,
-          probeMode: form.probeMode
+          probeMode: form.probeMode,
+          udpEchoPort: parsedEchoPort,
         };
         res = await createForward(createData);
       }
@@ -1723,7 +1744,7 @@ export default function ForwardPage() {
                           label="选择诊断方式"
                           placeholder="留空时使用 TCP 建连延迟"
                           description={form.probeMode === "udp_echo"
-                            ? `测量到目标服务器 ${UDP_ECHO_PORT}/UDP 的往返延迟。`
+                            ? `测量到目标服务器 ${parseUdpEchoPort(form.udpEchoPort).effectivePort}/UDP 的往返延迟。`
                             : undefined}
                           selectedKeys={form.probeMode ? [form.probeMode] : []}
                           onSelectionChange={(keys) => {
@@ -1736,7 +1757,13 @@ export default function ForwardPage() {
                           <SelectItem key="udp_stun">{PROBE_MODE_LABELS.udp_stun}</SelectItem>
                           <SelectItem key="udp_echo">{PROBE_MODE_LABELS.udp_echo}</SelectItem>
                         </Select>
-                        {form.probeMode === "udp_echo" && <UdpEchoInstall />}
+                        {form.probeMode === "udp_echo" && (
+                          <UdpEchoInstall
+                            portValue={form.udpEchoPort}
+                            onPortChange={(value) => setForm(prev => ({ ...prev, udpEchoPort: value }))}
+                            portError={errors.udpEchoPort}
+                          />
+                        )}
                       </>
                     )}
                   </div>

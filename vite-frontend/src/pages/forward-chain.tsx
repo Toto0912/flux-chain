@@ -13,7 +13,7 @@ import { arrayMove, rectSortingStrategy, SortableContext, sortableKeyboardCoordi
 import { CSS } from "@dnd-kit/utilities";
 import toast from "react-hot-toast";
 import { createForwardChain, deleteForwardChain, getForwardChainList, getNodeList, requestForwardChainProbe, setForwardChainStatus, updateForwardChain, updateForwardChainOrder, type ForwardChainProbeStatus } from "@/api";
-import { UDP_ECHO_PORT, UdpEchoInstall } from "@/components/udp-echo-install";
+import { UDP_ECHO_PORT, UdpEchoInstall, parseUdpEchoPort } from "@/components/udp-echo-install";
 
 type NodeItem = { id: number; name: string; serverIp: string; status: number; portSta: number; portEnd: number };
 type HopForm = { nodeIds: number[] };
@@ -31,6 +31,7 @@ type ChainItem = {
   targetPort: number;
   protocol: string;
   probeMode?: ProbeMode;
+  udpEchoPort?: number;
   hopsJson: string;
   pathsJson: string;
   probeIntervalMs: number;
@@ -42,12 +43,12 @@ type ChainItem = {
   outFlow: number;
   manualProbe?: ForwardChainProbeStatus | null;
 };
-type ChainForm = { id?: number; name: string; inNodeId: number | null; inPort: string; targetHost: string; targetPort: string; protocol: string; probeMode: ProbeMode; probeIntervalSeconds: string; probeTimeoutSeconds: string; switchThresholdMs: string; hops: HopForm[] };
+type ChainForm = { id?: number; name: string; inNodeId: number | null; inPort: string; targetHost: string; targetPort: string; protocol: string; probeMode: ProbeMode; udpEchoPort: string; probeIntervalSeconds: string; probeTimeoutSeconds: string; switchThresholdMs: string; hops: HopForm[] };
 type ViewMode = "direct" | "grouped";
 type OwnerGroup = { name: string; entries: Map<number, ChainItem[]>; chainCount: number };
 const viewModeKey = "forwardChainViewMode";
 const MIN_PROBE_INTERVAL_SECONDS = 5;
-const emptyForm = (): ChainForm => ({ name: "", inNodeId: null, inPort: "", targetHost: "", targetPort: "", protocol: "tls", probeMode: "tcp", probeIntervalSeconds: "300", probeTimeoutSeconds: "3", switchThresholdMs: "1000", hops: [{ nodeIds: [] }, { nodeIds: [] }] });
+const emptyForm = (): ChainForm => ({ name: "", inNodeId: null, inPort: "", targetHost: "", targetPort: "", protocol: "tls", probeMode: "tcp", udpEchoPort: "", probeIntervalSeconds: "300", probeTimeoutSeconds: "3", switchThresholdMs: "1000", hops: [{ nodeIds: [] }, { nodeIds: [] }] });
 const stunTarget = "stun.l.google.com:19302";
 const latencyLabel = (ms: number, udp: boolean) => `${Number(ms).toFixed(1)} ms${udp ? " RTT" : ""}`;
 const parseJson = <T,>(raw: string | undefined, fallback: T): T => { try { return raw ? JSON.parse(raw) as T : fallback; } catch { return fallback; } };
@@ -117,7 +118,7 @@ function ChainCard({ chain, entryNode, sortDisabled, requestingProbe, onEdit, on
   const selected = paths[chain.selectedPathIndex];
   const udpProbe = chain.probeMode === "udp_stun" || chain.probeMode === "udp_echo";
   const probeDescription = chain.probeMode === "udp_echo"
-    ? `UDP 回显往返延迟至 ${formatAddress(chain.targetHost, UDP_ECHO_PORT)}`
+    ? `UDP 回显往返延迟至 ${formatAddress(chain.targetHost, chain.udpEchoPort || UDP_ECHO_PORT)}`
     : chain.probeMode === "udp_stun" ? `UDP 往返延迟至 ${stunTarget}` : "TCP 建连耗时至业务目标";
   const running = chain.status === 1;
   const probeState = chain.manualProbe?.state;
@@ -332,7 +333,7 @@ export default function ForwardChainPage() {
       return true;
     }) }));
     if (removedDuplicates) toast("已从表单中移除重复节点，请确认各跳候选服务器后保存");
-    setForm({ id: chain.id, name: chain.name, inNodeId: chain.inNodeId, inPort: String(chain.inPort), targetHost: chain.targetHost, targetPort: String(chain.targetPort), protocol: chain.protocol || "tls", probeMode: chain.probeMode ?? "tcp", probeIntervalSeconds: String(chain.probeIntervalMs / 1000), probeTimeoutSeconds: String(chain.probeTimeoutMs / 1000), switchThresholdMs: String(chain.switchThresholdMs), hops: hops.length ? hops : [{ nodeIds: [] }, { nodeIds: [] }] });
+    setForm({ id: chain.id, name: chain.name, inNodeId: chain.inNodeId, inPort: String(chain.inPort), targetHost: chain.targetHost, targetPort: String(chain.targetPort), protocol: chain.protocol || "tls", probeMode: chain.probeMode ?? "tcp", udpEchoPort: chain.udpEchoPort && chain.udpEchoPort !== UDP_ECHO_PORT ? String(chain.udpEchoPort) : "", probeIntervalSeconds: String(chain.probeIntervalMs / 1000), probeTimeoutSeconds: String(chain.probeTimeoutMs / 1000), switchThresholdMs: String(chain.switchThresholdMs), hops: hops.length ? hops : [{ nodeIds: [] }, { nodeIds: [] }] });
     setOpen(true);
   };
   const submit = async () => {
@@ -348,8 +349,10 @@ export default function ForwardChainPage() {
       seen.add(id);
     }
     if (intervalMs < MIN_PROBE_INTERVAL_SECONDS * 1000 || intervalMs > 3600000 || timeoutMs < 1000 || timeoutMs > 5000 || threshold < 1 || threshold > timeoutMs) { toast.error("探测间隔、超时时间或切换阈值超出允许范围"); return; }
+    const parsedEchoPort = parseUdpEchoPort(form.udpEchoPort);
+    if (form.protocol === "udp" && form.probeMode === "udp_echo" && !parsedEchoPort.valid) { toast.error("UDP 回显端口必须为1到65535之间的整数"); return; }
     setSaving(true);
-    const data = { id: form.id, name: form.name.trim(), inNodeId: form.inNodeId, inPort, targetHost: form.targetHost.trim(), targetPort: Number(form.targetPort), protocol: form.protocol, probeMode: form.probeMode, probeIntervalMs: intervalMs, probeTimeoutMs: timeoutMs, switchThresholdMs: threshold, hops: form.hops };
+    const data = { id: form.id, name: form.name.trim(), inNodeId: form.inNodeId, inPort, targetHost: form.targetHost.trim(), targetPort: Number(form.targetPort), protocol: form.protocol, probeMode: form.probeMode, udpEchoPort: parsedEchoPort.port, probeIntervalMs: intervalMs, probeTimeoutMs: timeoutMs, switchThresholdMs: threshold, hops: form.hops };
     const result = form.id ? await updateForwardChain(data) : await createForwardChain(data);
     setSaving(false);
     if (result.code === 0) { toast.success(form.id ? "转发链已更新" : "转发链已创建"); setOpen(false); await reload(); } else toast.error(result.msg || "保存失败");
@@ -505,7 +508,7 @@ export default function ForwardChainPage() {
           <>
             <Select label="选路探测方式" selectedKeys={[form.probeMode]}
               description={form.probeMode === "udp_echo"
-                ? `测量每条候选路径到目标服务器 ${UDP_ECHO_PORT}/UDP 的往返延迟。`
+                ? `测量每条候选路径到目标服务器 ${parseUdpEchoPort(form.udpEchoPort).effectivePort}/UDP 的往返延迟。`
                 : form.probeMode === "udp_stun" ? `测量每条候选路径到 ${stunTarget} 的 UDP 往返延迟。`
                   : "通过配套 TCP 链路测量到业务目标的建连耗时。"}
               onSelectionChange={keys => {
@@ -516,7 +519,12 @@ export default function ForwardChainPage() {
               <SelectItem key="udp_stun">UDP STUN 到 Google</SelectItem>
               <SelectItem key="udp_echo">UDP 回显</SelectItem>
             </Select>
-            {form.probeMode === "udp_echo" && <UdpEchoInstall />}
+            {form.probeMode === "udp_echo" && (
+              <UdpEchoInstall
+                portValue={form.udpEchoPort}
+                onPortChange={(value) => setForm(f => ({ ...f, udpEchoPort: value }))}
+              />
+            )}
           </>
         )}
         <div className="grid md:grid-cols-3 gap-3"><Input type="number" label="探测间隔（秒）" min={MIN_PROBE_INTERVAL_SECONDS} max={3600} value={form.probeIntervalSeconds} onChange={e => setForm(f => ({ ...f, probeIntervalSeconds: e.target.value }))} />

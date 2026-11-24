@@ -2,23 +2,69 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
+	"errors"
 	"log"
 	"net"
+	"net/netip"
 	"os"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
 
 const (
-	echoAddress         = ":19302"
-	echoPrefix          = "FCE1"
-	echoLength          = len(echoPrefix) + 16
-	maxRepliesPerSecond = 1024
+	defaultEchoPort        = 19302
+	portEnvVar             = "FLUXCHAIN_UDP_ECHO_PORT"
+	keyEnvVar              = "FLUXCHAIN_UDP_ECHO_KEY"
+	requestMagic           = "FCQ2"
+	replyMagic             = "FCR2"
+	magicLen               = 4
+	timestampLen           = 8
+	nonceLen               = 16
+	headerLen              = magicLen + timestampLen + nonceLen
+	packetLen              = headerLen + sha256.Size
+	maxClockSkewSeconds    = 60
+	maxRepliesPerSecond    = 256
+	maxPerIPPerSecond      = 32
+	maxTrackedIPsPerSecond = 256
 )
 
+func parseKey(raw string) ([]byte, error) {
+	key, err := hex.DecodeString(strings.TrimSpace(raw))
+	if err != nil || len(key) != sha256.Size {
+		return nil, errors.New("环境变量 FLUXCHAIN_UDP_ECHO_KEY 必须为 64 位十六进制密钥")
+	}
+	return key, nil
+}
+
+func parsePort(raw string) (int, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return defaultEchoPort, nil
+	}
+	port, err := strconv.Atoi(trimmed)
+	if err != nil || port < 1 || port > 65535 {
+		return 0, errors.New("环境变量 FLUXCHAIN_UDP_ECHO_PORT 必须为 1-65535 之间的端口")
+	}
+	return port, nil
+}
+
 func main() {
+	key, err := parseKey(os.Getenv(keyEnvVar))
+	if err != nil {
+		log.Fatal(err)
+	}
+	port, err := parsePort(os.Getenv(portEnvVar))
+	if err != nil {
+		log.Fatal(err)
+	}
 	listener := net.ListenConfig{Control: enablePacketInfo}
-	packetConn, err := listener.ListenPacket(context.Background(), "udp", echoAddress)
+	packetConn, err := listener.ListenPacket(context.Background(), "udp", ":"+strconv.Itoa(port))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -27,32 +73,84 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Printf("FluxChain UDP echo listening on %s", packetConn.LocalAddr())
-	if err := serve(packetConn.(*net.UDPConn)); err != nil {
+	if err := serve(packetConn.(*net.UDPConn), key); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func serve(conn *net.UDPConn) error {
-	var packet [echoLength + 1]byte
+type rateLimiter struct {
+	second int64
+	total  int
+	perIP  map[netip.Addr]int
+}
+
+func (r *rateLimiter) allow(now int64, peer *net.UDPAddr) bool {
+	if r.second != now {
+		r.second = now
+		r.total = 0
+		clear(r.perIP)
+	}
+	if r.total >= maxRepliesPerSecond {
+		return false
+	}
+	addr, ok := netip.AddrFromSlice(peer.IP)
+	if !ok {
+		return false
+	}
+	addr = addr.Unmap()
+	count, exists := r.perIP[addr]
+	if !exists && len(r.perIP) >= maxTrackedIPsPerSecond {
+		return false
+	}
+	if count >= maxPerIPPerSecond {
+		return false
+	}
+	r.total++
+	r.perIP[addr] = count + 1
+	return true
+}
+
+func verifyAndBuildReply(packet, key []byte, now int64) ([]byte, bool) {
+	if len(packet) != packetLen || string(packet[:magicLen]) != requestMagic {
+		return nil, false
+	}
+	sent := int64(binary.BigEndian.Uint64(packet[magicLen : magicLen+timestampLen]))
+	if sent < now-maxClockSkewSeconds || sent > now+maxClockSkewSeconds {
+		return nil, false
+	}
+	mac := hmac.New(sha256.New, key)
+	mac.Write(packet[:headerLen])
+	if !hmac.Equal(packet[headerLen:], mac.Sum(nil)) {
+		return nil, false
+	}
+
+	reply := make([]byte, packetLen)
+	copy(reply[:magicLen], replyMagic)
+	copy(reply[magicLen:headerLen], packet[magicLen:headerLen])
+	replyMac := hmac.New(sha256.New, key)
+	replyMac.Write(reply[:headerLen])
+	copy(reply[headerLen:], replyMac.Sum(nil))
+	return reply, true
+}
+
+func serve(conn *net.UDPConn, key []byte) error {
+	var packet [packetLen + 1]byte
 	var control [96]byte
-	var second int64
-	var replies int
+	limiter := rateLimiter{perIP: make(map[netip.Addr]int)}
 	for {
 		n, controlLen, _, peer, err := conn.ReadMsgUDP(packet[:], control[:])
 		if err != nil {
 			return err
 		}
-		if n != echoLength || string(packet[:len(echoPrefix)]) != echoPrefix {
+		now := time.Now().Unix()
+		reply, ok := verifyAndBuildReply(packet[:n], key, now)
+		if !ok {
 			continue
 		}
-		if now := time.Now().Unix(); second != now {
-			second, replies = now, 0
-		}
-		if replies >= maxRepliesPerSecond {
+		if !limiter.allow(now, peer) {
 			continue
 		}
-		replies++
-		_, _, _ = conn.WriteMsgUDP(packet[:n], replyControl(control[:controlLen], peer.IP.To4() != nil), peer)
+		_, _, _ = conn.WriteMsgUDP(reply, replyControl(control[:controlLen], peer.IP.To4() != nil), peer)
 	}
 }
 

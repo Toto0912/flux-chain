@@ -40,13 +40,14 @@ func prepareForwardUdpStun(data interface{}) (interface{}, error) {
 
 func (w *WebSocketReporter) handleForwardUdpStun(data interface{}) (interface{}, error) {
 	var request struct {
-		Chain     string `json:"chain"`
-		Token     string `json:"token"`
-		Interface string `json:"interface"`
-		Timeout   int    `json:"timeout"`
-		LinkOnly  bool   `json:"linkOnly"`
-		Mode      string `json:"mode"`
-		Target    string `json:"target"`
+		Chain      string `json:"chain"`
+		Token      string `json:"token"`
+		Interface  string `json:"interface"`
+		Timeout    int    `json:"timeout"`
+		LinkOnly   bool   `json:"linkOnly"`
+		Mode       string `json:"mode"`
+		Target     string `json:"target"`
+		UDPEchoKey string `json:"udpEchoKey"`
 	}
 	payload, err := json.Marshal(data)
 	if err != nil {
@@ -75,10 +76,14 @@ func (w *WebSocketReporter) handleForwardUdpStun(data interface{}) (interface{},
 			if err != nil || host == "" || portErr != nil || port < 1 || port > 65535 {
 				return nil, errors.New("UDP 回显探测目标地址无效")
 			}
-			rtt, err := stunprobe.ProbeFixedEcho(ctx, request.Target, dialUDP)
+			echoKey, err := stunprobe.ParseEchoKey(request.UDPEchoKey)
+			if err != nil {
+				return nil, err
+			}
+			rtt, err := stunprobe.ProbeFixedEcho(ctx, request.Target, echoKey, dialUDP)
 			if err != nil {
 				if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
-					return nil, errors.New("未收到目标服务器的 UDP 回显（19302/UDP 探测超时）")
+					return nil, fmt.Errorf("未收到目标服务器的 UDP 回显（%d/UDP 探测超时，请检查服务状态与密钥）", port)
 				}
 				return nil, fmt.Errorf("UDP 回显探测失败：%w", err)
 			}

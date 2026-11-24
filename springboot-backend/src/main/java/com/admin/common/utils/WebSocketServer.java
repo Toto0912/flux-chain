@@ -459,6 +459,10 @@ public class WebSocketServer extends TextWebSocketHandler {
         return supportsProbe(nodeId, "forwardUdpEcho");
     }
 
+    public static boolean supportsUdpEchoAuth(Long nodeId) {
+        return supportsProbe(nodeId, "udpEchoAuth");
+    }
+
     public static boolean supportsForwardEgressStun(Long nodeId) {
         return supportsProbe(nodeId, "forwardEgressStun");
     }

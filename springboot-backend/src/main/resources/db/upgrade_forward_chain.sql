@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS `forward_chain` (
   `paths_json` longtext NOT NULL,
   `endpoint_ports_json` longtext NOT NULL,
   `probe_mode` varchar(12) NOT NULL DEFAULT 'tcp',
+  `udp_echo_port` int NOT NULL DEFAULT 19302,
   `probe_interval_ms` int NOT NULL DEFAULT 300000,
   `probe_timeout_ms` int NOT NULL DEFAULT 3000,
   `switch_threshold_ms` int NOT NULL DEFAULT 1000,
@@ -80,6 +81,26 @@ SET @forward_health_migration = IF(
 PREPARE forward_health_stmt FROM @forward_health_migration;
 EXECUTE forward_health_stmt;
 DEALLOCATE PREPARE forward_health_stmt;
+
+SET @chain_echo_port_migration = IF(
+  EXISTS (SELECT 1 FROM information_schema.COLUMNS
+          WHERE table_schema = DATABASE() AND table_name = 'forward_chain' AND column_name = 'udp_echo_port'),
+  'SELECT 1',
+  'ALTER TABLE `forward_chain` ADD COLUMN `udp_echo_port` int NOT NULL DEFAULT 19302'
+);
+PREPARE chain_echo_port_stmt FROM @chain_echo_port_migration;
+EXECUTE chain_echo_port_stmt;
+DEALLOCATE PREPARE chain_echo_port_stmt;
+
+SET @forward_echo_port_migration = IF(
+  EXISTS (SELECT 1 FROM information_schema.COLUMNS
+          WHERE table_schema = DATABASE() AND table_name = 'forward' AND column_name = 'udp_echo_port'),
+  'SELECT 1',
+  'ALTER TABLE `forward` ADD COLUMN `udp_echo_port` int(10) NOT NULL DEFAULT ''19302'''
+);
+PREPARE forward_echo_port_stmt FROM @forward_echo_port_migration;
+EXECUTE forward_echo_port_stmt;
+DEALLOCATE PREPARE forward_echo_port_stmt;
 
 -- FluxChain：仅替换旧项目默认名称，保留自定义的网站名称。
 UPDATE `vite_config` SET `value` = 'FluxChain'

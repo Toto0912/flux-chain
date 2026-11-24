@@ -42,6 +42,34 @@ class OrdinaryForwardUdpConfigTest {
         JSONObject nodeSettings = input.nodeSettings(ForwardTargetHealthConfig.targetList(destinations));
         assertEquals("stun", nodeSettings.getString("udpMode"));
         assertFalse(nodeSettings.containsKey("udpTargets"));
+        assertFalse(nodeSettings.containsKey("udpEchoKey"));
+
+        ForwardTargetHealthConfig fixedEcho = new ForwardTargetHealthConfig();
+        fixedEcho.setEnabled(true);
+        fixedEcho.setTcp(false);
+        fixedEcho.setUdpMode(ForwardTargetHealthConfig.FIXED_ECHO);
+        ForwardTargetHealthConfig defaultEcho = ForwardTargetHealthConfig.validate(fixedEcho, destinations, "latency");
+        assertEquals(19302, defaultEcho.getUdpEchoPort());
+        JSONObject defaultEchoNodeSettings = defaultEcho.nodeSettings(
+                ForwardTargetHealthConfig.targetList(destinations),
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
+        assertEquals(19302, defaultEchoNodeSettings.getInteger("udpEchoPort"));
+        assertEquals("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                defaultEchoNodeSettings.getString("udpEchoKey"));
+
+        fixedEcho.setUdpEchoPort(29302);
+        ForwardTargetHealthConfig customEcho = ForwardTargetHealthConfig.validate(fixedEcho, destinations, "latency");
+        assertEquals(29302, customEcho.getUdpEchoPort());
+        assertEquals(29302, customEcho.nodeSettings(
+                ForwardTargetHealthConfig.targetList(destinations),
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef").getInteger("udpEchoPort"));
+
+        fixedEcho.setUdpEchoPort(70000);
+        assertThrows(IllegalArgumentException.class,
+                () -> ForwardTargetHealthConfig.validate(fixedEcho, destinations, "latency"));
+
+        assertFalse(input.nodeSettings(ForwardTargetHealthConfig.targetList(destinations), "ignored")
+                .containsKey("udpEchoKey"));
     }
 
     @ParameterizedTest

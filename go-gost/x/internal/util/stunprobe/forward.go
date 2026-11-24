@@ -3,11 +3,14 @@ package stunprobe
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
@@ -19,8 +22,19 @@ const (
 	ticketLifetime     = 15 * time.Second
 	maxTickets         = 64
 	EchoPort           = "19302"
-	echoPrefix         = "FCE1"
+	echoRequestMagic   = "FCQ2"
+	echoReplyMagic     = "FCR2"
+	echoHeaderLen      = 4 + 8 + 16
+	echoPacketLen      = echoHeaderLen + sha256.Size
 )
+
+func ParseEchoKey(value string) ([]byte, error) {
+	key, err := hex.DecodeString(strings.TrimSpace(value))
+	if err != nil || len(key) != sha256.Size {
+		return nil, errors.New("UDP 回显探测密钥无效")
+	}
+	return key, nil
+}
 
 type tunnelTicket struct {
 	service  string
@@ -113,10 +127,45 @@ func ProbeEcho(ctx context.Context, address string, dial DialUDP) (time.Duration
 }
 
 // ProbeFixedEcho checks a target running the standalone FluxChain echo service.
-func ProbeFixedEcho(ctx context.Context, address string, dial DialUDP) (time.Duration, error) {
-	var request [len(echoPrefix) + 16]byte
-	copy(request[:], echoPrefix)
-	return probeEcho(ctx, address, dial, request[:], len(echoPrefix))
+func ProbeFixedEcho(ctx context.Context, address string, key []byte, dial DialUDP) (time.Duration, error) {
+	if len(key) != sha256.Size {
+		return 0, errors.New("UDP 回显探测密钥无效")
+	}
+	var request [echoPacketLen]byte
+	copy(request[:4], echoRequestMagic)
+	binary.BigEndian.PutUint64(request[4:12], uint64(time.Now().Unix()))
+	if _, err := rand.Read(request[12:echoHeaderLen]); err != nil {
+		return 0, err
+	}
+	signEcho(request[:], key)
+
+	conn, err := dial(ctx, address)
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close()
+	_, latency, err := exchangeConnected(ctx, conn, request[:], echoPacketLen, func(reply []byte) bool {
+		return validEchoReply(reply, request[:], key)
+	})
+	return latency, err
+}
+
+func signEcho(packet, key []byte) {
+	mac := hmac.New(sha256.New, key)
+	mac.Write(packet[:echoHeaderLen])
+	copy(packet[echoHeaderLen:], mac.Sum(nil))
+}
+
+func validEchoReply(reply, request, key []byte) bool {
+	if len(reply) != echoPacketLen || string(reply[:4]) != echoReplyMagic {
+		return false
+	}
+	if !bytes.Equal(reply[4:echoHeaderLen], request[4:echoHeaderLen]) {
+		return false
+	}
+	mac := hmac.New(sha256.New, key)
+	mac.Write(reply[:echoHeaderLen])
+	return hmac.Equal(reply[echoHeaderLen:], mac.Sum(nil))
 }
 
 func probeEcho(ctx context.Context, address string, dial DialUDP, request []byte, nonceOffset int) (time.Duration, error) {

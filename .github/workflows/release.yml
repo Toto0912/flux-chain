@@ -54,6 +54,7 @@ jobs:
           go test x/socket/probe_context.go x/socket/probe_context_test.go x/socket/probe_dispatch.go x/socket/probe_dispatch_test.go -count=1
           go test -mod=readonly github.com/go-gost/x/internal/util/forwardhealth github.com/go-gost/x/internal/util/stunprobe github.com/go-gost/x/handler/stunprobe github.com/go-gost/x/connector/relay -count=1
           go test -mod=readonly github.com/go-gost/x/listener/quic -count=1
+          (cd ../vite-frontend/udp-echo && go test main.go main_test.go -count=1)
           CGO_ENABLED=0 go build -mod=readonly -trimpath -o /tmp/fluxchain-node .
           cd /tmp
           ./fluxchain-node -V
@@ -167,10 +168,10 @@ jobs:
           version=$(cat VERSION)
           python3 scripts/check_release.py "$GITHUB_REF_NAME"
           release_notes=$(cat <<EOF
-          - 普通转发新增目标健康检查和最低延迟自动切换。启用后可查看各目标的探测结果，出口到 Google STUN 的延迟单独展示。
-          - 普通转发和转发链均支持 UDP 回显探测。可从面板复制一键安装命令，在目标服务器部署监听 UDP 19302 的回显服务。
-          - 普通转发每条最多可新增至 64 个目标，健康检查按用户和出口节点限制负载。修复探测结果过大时节点控制连接断开的问题。
-          - 使用新探测功能前，请将面板和参与探测的节点更新到本版本。
+          - UDP 回显服务升级为带 HMAC-SHA256 密钥鉴权与单 IP 限速的 v2 协议，防止开放回显端口被滥用。
+          - UDP 回显支持自定义监听与探测端口（留空默认 19302/UDP），普通转发诊断、多目标健康检查及转发链均支持配置并同步更新安装命令。
+          - 面板 UDP 回显安装卡片新增一键卸载命令，并对齐命令框样式。
+          - 升级到本版本后，请同时更新面板、参与探测的节点以及目标服务器上的 UDP 回显服务（重新执行面板给出的安装命令即可覆盖升级）。
 
           [安装与更新说明](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/README.md)
           EOF

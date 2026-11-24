@@ -19,6 +19,7 @@ public class ForwardTargetHealthConfig {
     private Boolean enabled;
     private Boolean tcp;
     private String udpMode;
+    private Integer udpEchoPort;
     private Map<String, String> udpTargets;
     private Integer intervalSeconds;
     private Integer timeoutSeconds;
@@ -65,6 +66,9 @@ public class ForwardTargetHealthConfig {
                 ? inRange(settings.switchThresholdMs, 1000, 1, normalized.timeoutSeconds * 1000, "切换阈值（毫秒）")
                 : 1000;
         normalized.udpTargets = new LinkedHashMap<>();
+        if (FIXED_ECHO.equals(normalized.udpMode)) {
+            normalized.udpEchoPort = inRange(settings.udpEchoPort, 19302, 1, 65535, "UDP 回显端口");
+        }
         if ("echo".equals(normalized.udpMode) && settings.udpTargets != null) {
             for (String target : targets) {
                 String probeAddress = settings.udpTargets.get(target);
@@ -79,12 +83,22 @@ public class ForwardTargetHealthConfig {
     }
 
     public JSONObject nodeSettings(List<String> targets) {
+        return nodeSettings(targets, null);
+    }
+
+    public JSONObject nodeSettings(List<String> targets, String udpEchoKey) {
         JSONObject settings = new JSONObject();
         settings.put("tcp", tcp);
         settings.put("udpMode", udpMode);
         settings.put("intervalSeconds", intervalSeconds);
         settings.put("timeoutSeconds", timeoutSeconds);
         settings.put("switchThresholdMs", switchThresholdMs);
+        if (FIXED_ECHO.equals(udpMode)) {
+            settings.put("udpEchoPort", udpEchoPort != null ? udpEchoPort : 19302);
+            if (udpEchoKey != null && !udpEchoKey.isBlank()) {
+                settings.put("udpEchoKey", udpEchoKey);
+            }
+        }
         if ("echo".equals(udpMode) && udpTargets != null && !udpTargets.isEmpty()) {
             settings.put("udpTargets", targets.stream().map(target -> udpTargets.getOrDefault(target, "")).toList());
         }

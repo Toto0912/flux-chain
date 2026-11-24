@@ -67,6 +67,7 @@ type Monitor struct {
 	strategy  string
 	addresses []string
 	probes    []*protocolProbe
+	echoKey   []byte
 	dial      func(context.Context, string, string) (net.Conn, error)
 }
 
@@ -83,6 +84,16 @@ func New(check *config.ForwardTargetHealthConfig, nodes []*config.ForwardNodeCon
 		return nil, errors.New("目标 UDP 探测方式无效")
 	}
 	m := &Monitor{config: *check, strategy: strategy, dial: dial}
+	if check.UDPMode == "echo_fixed" {
+		if check.UDPEchoPort != 0 && (check.UDPEchoPort < 1 || check.UDPEchoPort > 65535) {
+			return nil, errors.New("UDP 回显端口必须在 1 到 65535 之间")
+		}
+		echoKey, err := stunprobe.ParseEchoKey(check.UDPEchoKey)
+		if err != nil {
+			return nil, err
+		}
+		m.echoKey = echoKey
+	}
 	for _, node := range nodes {
 		if node == nil {
 			continue
@@ -147,7 +158,11 @@ func (m *Monitor) targetDestinations(mode string) []probeDestination {
 		address := target
 		if mode == "echo_fixed" {
 			host, _, _ := net.SplitHostPort(target)
-			address = net.JoinHostPort(host, stunprobe.EchoPort)
+			port := stunprobe.EchoPort
+			if m.config.UDPEchoPort > 0 {
+				port = strconv.Itoa(m.config.UDPEchoPort)
+			}
+			address = net.JoinHostPort(host, port)
 			if existing, ok := fixedAddresses[address]; ok {
 				destinations[existing].targetIndexes = append(destinations[existing].targetIndexes, i)
 				continue
@@ -330,7 +345,7 @@ func (m *Monitor) measure(parent context.Context, probe *protocolProbe, address 
 	case "echo":
 		latency, err = stunprobe.ProbeEcho(ctx, address, dialUDP)
 	case "echo_fixed":
-		latency, err = stunprobe.ProbeFixedEcho(ctx, address, dialUDP)
+		latency, err = stunprobe.ProbeFixedEcho(ctx, address, m.echoKey, dialUDP)
 	case googleSTUNMode:
 		latency, err = stunprobe.ProbeGoogle(ctx, dialUDP)
 	}

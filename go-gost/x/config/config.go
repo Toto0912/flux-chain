@@ -363,6 +363,8 @@ type ForwardTargetHealthConfig struct {
 	TCP               bool     `yaml:"tcp" json:"tcp"`
 	UDPMode           string   `yaml:"udpMode" json:"udpMode"`
 	UDPTargets        []string `yaml:"udpTargets,omitempty" json:"udpTargets,omitempty"`
+	UDPEchoKey        string   `yaml:"udpEchoKey,omitempty" json:"udpEchoKey,omitempty"`
+	UDPEchoPort       int      `yaml:"udpEchoPort,omitempty" json:"udpEchoPort,omitempty"`
 	IntervalSeconds   int      `yaml:"intervalSeconds" json:"intervalSeconds"`
 	TimeoutSeconds    int      `yaml:"timeoutSeconds" json:"timeoutSeconds"`
 	SwitchThresholdMs int      `yaml:"switchThresholdMs" json:"switchThresholdMs"`

@@ -7,6 +7,7 @@ import com.admin.common.annotation.SerializeNodePorts;
 import com.admin.common.dto.GostDto;
 import com.admin.common.lang.R;
 import com.admin.common.utils.GostUtil;
+import com.admin.common.utils.UdpEchoKeyUtil;
 import com.admin.common.utils.WebSocketServer;
 import com.admin.entity.ForwardChain;
 import com.admin.entity.Node;
@@ -211,6 +212,9 @@ public class ForwardChainServiceImpl extends ServiceImpl<ForwardChainMapper, For
         boolean checkPortCapacity = udpProbe || (existing != null && usesUdpProbe(existing));
         if (!udpProbe && !"tcp".equals(probeMode)) return "探测方式仅支持 TCP 建连、UDP STUN 或 UDP 回显";
         if (udpProbe && !"udp".equals(dto.getProtocol())) return "UDP 探测需要使用原生 UDP 节点链路";
+        if (dto.getUdpEchoPort() != null && (dto.getUdpEchoPort() < 1 || dto.getUdpEchoPort() > 65535)) {
+            return "UDP 回显端口必须在1到65535之间";
+        }
         Node entry = nodeService.getById(dto.getInNodeId());
         if (!usableNode(entry)) return "入口节点不存在或未连接";
         if (udpProbe && !supportsUdpProbe(entry, probeMode)) return udpProbeUpgradeMessage(entry, probeMode);
@@ -280,8 +284,9 @@ public class ForwardChainServiceImpl extends ServiceImpl<ForwardChainMapper, For
     }
 
     private boolean supportsUdpProbe(Node node, String probeMode) {
-        return UDP_ECHO.equals(probeMode) ? WebSocketServer.supportsUdpEchoProbe(node.getId()) :
-                WebSocketServer.supportsUdpStunProbe(node.getId());
+        return UDP_ECHO.equals(probeMode)
+                ? WebSocketServer.supportsUdpEchoProbe(node.getId()) && WebSocketServer.supportsUdpEchoAuth(node.getId())
+                : WebSocketServer.supportsUdpStunProbe(node.getId());
     }
 
     private String udpProbeUpgradeMessage(Node node, String probeMode) {
@@ -297,6 +302,7 @@ public class ForwardChainServiceImpl extends ServiceImpl<ForwardChainMapper, For
         chain.setTargetPort(dto.getTargetPort());
         chain.setProtocol(dto.getProtocol() == null ? "tls" : dto.getProtocol());
         chain.setProbeMode(dto.getProbeMode());
+        chain.setUdpEchoPort(normalizeUdpEchoPort(dto.getUdpEchoPort()));
         chain.setHopsJson(JSON.toJSONString(dto.getHops()));
         chain.setProbeIntervalMs(dto.getProbeIntervalMs());
         chain.setProbeTimeoutMs(dto.getProbeTimeoutMs());
@@ -521,9 +527,10 @@ public class ForwardChainServiceImpl extends ServiceImpl<ForwardChainMapper, For
             if (udpProbe) {
                 String nextProbe = next == null ? null : formatAddress(targetHost, next.getInteger("stunPort"));
                 String echoTarget = next == null && UDP_ECHO.equals(chain.getProbeMode())
-                        ? formatAddress(targetHost, UDP_ECHO_PORT) : null;
+                        ? formatAddress(targetHost, normalizeUdpEchoPort(chain.getUdpEchoPort())) : null;
+                String echoKey = echoTarget != null ? UdpEchoKeyUtil.getEchoKey() : null;
                 GostDto probeService = GostUtil.AddUdpProbeStage(node.getId(), stunServiceName(endpoint),
-                        endpoint.getInteger("stunPort"), nextProbe, echoTarget, stunKey);
+                        endpoint.getInteger("stunPort"), nextProbe, echoTarget, stunKey, echoKey);
                 if (!success(probeService)) return R.err("创建 UDP 探测中继失败：" + node.getName() + "，" + (probeService == null ? "节点无响应" : probeService.getMsg()));
             }
         }
@@ -869,7 +876,12 @@ public class ForwardChainServiceImpl extends ServiceImpl<ForwardChainMapper, For
                 && Objects.equals(snapshot.getUpdatedTime(), current.getUpdatedTime())
                 && sameTopology(snapshot, current)
                 && Objects.equals(snapshot.getProbeMode(), current.getProbeMode())
+                && Objects.equals(normalizeUdpEchoPort(snapshot.getUdpEchoPort()), normalizeUdpEchoPort(current.getUdpEchoPort()))
                 && Objects.equals(snapshot.getEndpointPortsJson(), current.getEndpointPortsJson());
+    }
+
+    private static int normalizeUdpEchoPort(Integer port) {
+        return port != null && port >= 1 && port <= 65535 ? port : UDP_ECHO_PORT;
     }
 
     private boolean sameTopology(ForwardChain snapshot, ForwardChain current) {

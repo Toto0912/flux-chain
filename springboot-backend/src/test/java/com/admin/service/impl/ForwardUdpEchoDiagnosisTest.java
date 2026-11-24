@@ -3,7 +3,9 @@ package com.admin.service.impl;
 import com.admin.common.dto.ForwardDto;
 import com.admin.common.dto.ForwardUpdateDto;
 import com.admin.common.lang.R;
+import com.admin.common.utils.UdpEchoKeyUtil;
 import com.admin.common.utils.WebSocketServer;
+import com.admin.controller.ForwardController;
 import com.admin.entity.Forward;
 import com.admin.entity.Node;
 import com.admin.entity.Tunnel;
@@ -33,6 +35,7 @@ class ForwardUdpEchoDiagnosisTest {
     @BeforeEach
     void setUp() {
         ReflectionTestUtils.setField(com.admin.common.utils.JwtUtil.class, "SECRET_KEY", "test-secret-key");
+        ReflectionTestUtils.setField(UdpEchoKeyUtil.class, "SECRET_KEY", "test-secret-key");
         MockHttpServletRequest request = new MockHttpServletRequest();
         RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
     }
@@ -49,7 +52,14 @@ class ForwardUdpEchoDiagnosisTest {
         create.setTunnelId(1);
         create.setRemoteAddr("1.2.3.4:8080");
         create.setProbeMode("udp_echo");
+        create.setUdpEchoPort(29302);
         assertTrue(validator.validate(create).isEmpty());
+
+        create.setUdpEchoPort(0);
+        assertFalse(validator.validate(create).isEmpty());
+        create.setUdpEchoPort(65536);
+        assertFalse(validator.validate(create).isEmpty());
+        create.setUdpEchoPort(null);
 
         create.setProbeMode("invalid");
         assertFalse(validator.validate(create).isEmpty());
@@ -61,7 +71,12 @@ class ForwardUdpEchoDiagnosisTest {
         update.setTunnelId(1);
         update.setRemoteAddr("1.2.3.4:8080");
         update.setProbeMode("udp_echo");
+        update.setUdpEchoPort(29302);
         assertTrue(validator.validate(update).isEmpty());
+
+        update.setUdpEchoPort(70000);
+        assertFalse(validator.validate(update).isEmpty());
+        update.setUdpEchoPort(null);
 
         update.setProbeMode("invalid");
         assertFalse(validator.validate(update).isEmpty());
@@ -71,7 +86,7 @@ class ForwardUdpEchoDiagnosisTest {
     void supportsForwardUdpEchoChecksSessionCapability() {
         WebSocketSession session = mock(WebSocketSession.class);
         when(session.isOpen()).thenReturn(true);
-        when(session.getAttributes()).thenReturn(Map.of("forwardUdpEcho", true));
+        when(session.getAttributes()).thenReturn(Map.of("forwardUdpEcho", true, "udpEchoAuth", true));
 
         @SuppressWarnings("unchecked")
         Map<Long, WebSocketSession> sessions = (Map<Long, WebSocketSession>) ReflectionTestUtils.getField(WebSocketServer.class, "nodeSessions");
@@ -79,10 +94,29 @@ class ForwardUdpEchoDiagnosisTest {
         sessions.put(9991L, session);
         try {
             assertTrue(WebSocketServer.supportsForwardUdpEcho(9991L));
+            assertTrue(WebSocketServer.supportsUdpEchoAuth(9991L));
             assertFalse(WebSocketServer.supportsForwardUdpEcho(9992L));
+            assertFalse(WebSocketServer.supportsUdpEchoAuth(9992L));
         } finally {
             sessions.remove(9991L);
         }
+    }
+
+    @Test
+    void udpEchoKeyDerivationAndEndpointReturnDeterministic64HexKey() {
+        String keyA1 = UdpEchoKeyUtil.deriveKey("secret-alpha");
+        String keyA2 = UdpEchoKeyUtil.deriveKey("secret-alpha");
+        String keyB = UdpEchoKeyUtil.deriveKey("secret-beta");
+        assertEquals(keyA1, keyA2);
+        assertNotEquals(keyA1, keyB);
+        assertTrue(keyA1.matches("^[0-9a-f]{64}$"));
+
+        ForwardController controller = new ForwardController();
+        R res = controller.udpEchoKey();
+        assertEquals(0, res.getCode());
+        @SuppressWarnings("unchecked")
+        Map<String, String> data = (Map<String, String>) res.getData();
+        assertEquals(UdpEchoKeyUtil.deriveKey("test-secret-key"), data.get("key"));
     }
 
     @Test
@@ -144,6 +178,18 @@ class ForwardUdpEchoDiagnosisTest {
 
         assertEquals("2001:db8::1", results.get(1).getTargetIp());
         assertEquals(19302, results.get(1).getTargetPort());
+
+        // Custom udpEchoPort
+        forward.setUdpEchoPort(29302);
+        R customResponse = service.diagnoseForward(10L);
+        assertEquals(0, customResponse.getCode());
+        @SuppressWarnings("unchecked")
+        Map<String, Object> customReport = (Map<String, Object>) customResponse.getData();
+        @SuppressWarnings("unchecked")
+        List<ForwardServiceImpl.DiagnosisResult> customResults =
+                (List<ForwardServiceImpl.DiagnosisResult>) customReport.get("results");
+        assertEquals(29302, customResults.get(0).getTargetPort());
+        assertEquals(29302, customResults.get(1).getTargetPort());
     }
 
     @Test

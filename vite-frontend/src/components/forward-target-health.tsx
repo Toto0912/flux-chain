@@ -8,12 +8,13 @@ import { Select, SelectItem } from "@heroui/select";
 import { Spinner } from "@heroui/spinner";
 import { Switch } from "@heroui/switch";
 import { getForwardTargetHealth } from "@/api";
-import { UDP_ECHO_PORT, UdpEchoInstall } from "@/components/udp-echo-install";
+import { parseUdpEchoPort, UDP_ECHO_PORT, UdpEchoInstall } from "@/components/udp-echo-install";
 
 export interface TargetHealthSettings {
   enabled: boolean;
   tcp: boolean;
   udpMode: "off" | "echo" | "echo_fixed" | "stun";
+  udpEchoPort?: number;
   udpTargets: Record<string, string>;
   intervalSeconds: number;
   timeoutSeconds: number;
@@ -39,6 +40,13 @@ export function TargetHealthFields({ settings, targets, latency, onChange }: {
   const legacyEcho = settings.udpMode === "echo";
   const udpMode = legacyEcho ? "echo_fixed" : settings.udpMode;
   const showThreshold = latency && (settings.tcp || udpMode === "echo_fixed");
+  const [echoPortText, setEchoPortText] = useState(() =>
+    settings.udpEchoPort && settings.udpEchoPort !== UDP_ECHO_PORT ? String(settings.udpEchoPort) : ""
+  );
+  useEffect(() => {
+    setEchoPortText(settings.udpEchoPort && settings.udpEchoPort !== UDP_ECHO_PORT ? String(settings.udpEchoPort) : "");
+  }, [settings.udpEchoPort]);
+
   return (
     <div className="space-y-3 rounded-xl border border-divider p-3">
       <Switch size="sm" isSelected={settings.enabled} onValueChange={(enabled) => onChange({ ...settings, enabled })}>
@@ -63,7 +71,22 @@ export function TargetHealthFields({ settings, targets, latency, onChange }: {
           {udpMode === "stun" && (
             <p className="text-xs text-default-500">由转发出口直接探测 stun.l.google.com:19302，显示出口的 UDP 往返延迟。</p>
           )}
-          {udpMode === "echo_fixed" && <UdpEchoInstall />}
+          {udpMode === "echo_fixed" && (
+            <UdpEchoInstall
+              portValue={echoPortText}
+              onPortChange={(value) => {
+                setEchoPortText(value);
+                const parsed = parseUdpEchoPort(value);
+                if (!value.trim()) {
+                  onChange({ ...settings, udpEchoPort: undefined });
+                } else if (parsed.valid && parsed.port !== null) {
+                  onChange({ ...settings, udpEchoPort: parsed.port });
+                } else {
+                  onChange({ ...settings, udpEchoPort: Number(value) });
+                }
+              }}
+            />
+          )}
           {legacyEcho && (
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="text-xs text-default-500">此规则使用旧版自定义回显地址。</p>
