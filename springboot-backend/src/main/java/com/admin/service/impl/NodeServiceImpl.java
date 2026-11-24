@@ -406,7 +406,7 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
         StringBuilder command = new StringBuilder();
         
         // 固定发布版本，自动获取 FluxChain 修改版节点；参数始终经过 shell 转义。
-        command.append("curl -fL --retry 2 https://github.com/Toto0912/flux-chain/releases/download/v1.1.6/install.sh -o install.sh && bash ./install.sh");
+        command.append("curl -fL --retry 2 https://github.com/Toto0912/flux-chain/releases/download/v1.1.7-rc.1/install.sh -o install.sh && bash ./install.sh");
         
         // 处理服务器地址，如果是IPv6需要添加方括号
         String processedServerAddr = processServerAddress(viteConfig.getValue());
@@ -439,28 +439,37 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
         if (StrUtil.isBlank(serverAddr)) {
             return serverAddr;
         }
-        
-        // 如果已经被方括号包裹，直接返回
-        if (serverAddr.startsWith("[")) {
-            return serverAddr;
+        String trimmed = serverAddr.trim();
+        while (trimmed.endsWith("/")) {
+            trimmed = trimmed.substring(0, trimmed.length() - 1);
         }
-        
-        // 查找最后一个冒号，分离主机和端口
-        int lastColonIndex = serverAddr.lastIndexOf(':');
+        String lower = trimmed.toLowerCase(java.util.Locale.ROOT);
+        for (String prefix : new String[]{"https://", "http://", "wss://", "ws://"}) {
+            if (lower.startsWith(prefix)) {
+                String rest = trimmed.substring(prefix.length());
+                int slashIdx = rest.indexOf('/');
+                String authority = slashIdx >= 0 ? rest.substring(0, slashIdx) : rest;
+                String path = slashIdx >= 0 ? rest.substring(slashIdx) : "";
+                return prefix + bracketIPv6Authority(authority) + path;
+            }
+        }
+        return bracketIPv6Authority(trimmed);
+    }
+
+    private String bracketIPv6Authority(String authority) {
+        if (StrUtil.isBlank(authority) || authority.startsWith("[")) {
+            return authority;
+        }
+        int lastColonIndex = authority.lastIndexOf(':');
         if (lastColonIndex == -1) {
-            // 没有端口号，直接检查是否需要包裹
-            return isIPv6Address(serverAddr) ? "[" + serverAddr + "]" : serverAddr;
+            return isIPv6Address(authority) ? "[" + authority + "]" : authority;
         }
-        
-        String host = serverAddr.substring(0, lastColonIndex);
-        String port = serverAddr.substring(lastColonIndex);
-        
-        // 检查主机部分是否为IPv6地址
+        String host = authority.substring(0, lastColonIndex);
+        String port = authority.substring(lastColonIndex);
         if (isIPv6Address(host)) {
             return "[" + host + "]" + port;
         }
-        
-        return serverAddr;
+        return authority;
     }
 
     /**

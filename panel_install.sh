@@ -8,7 +8,7 @@ export LC_ALL=C
 
 
 # 安装和更新仅使用 Toto0912/flux-chain 的匹配版本资源。
-RELEASE_VERSION="1.1.6"
+RELEASE_VERSION="1.1.7-rc.1"
 RELEASE_URL="https://github.com/Toto0912/flux-chain/releases/download/v$RELEASE_VERSION"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -196,14 +196,15 @@ check_docker() {
 # 显示菜单
 show_menu() {
   echo "==============================================="
-  echo "          FluxChain v1.1.6 面板管理脚本"
+  echo "          FluxChain v1.1.7-rc.1 面板管理脚本"
   echo "==============================================="
   echo "请选择操作："
   echo "1. 安装面板"
   echo "2. 更新面板"
   echo "3. 卸载面板"
   echo "4. 导出备份"
-  echo "5. 退出"
+  echo "5. 清理旧版镜像"
+  echo "6. 退出"
   echo "==============================================="
 }
 
@@ -984,6 +985,24 @@ update_panel() {
   migrate_database || return 1
 
   echo "✅ 更新完成"
+  case "${PANEL_CLEANUP_OLD_IMAGES:-}" in
+    1|true|yes)
+      cleanup_old_images || echo "⚠️ 旧版镜像清理失败，面板已更新完成，请稍后排查 Docker 状态。" >&2
+      ;;
+    0|false|no)
+      ;;
+    *)
+      if [[ -t 0 ]]; then
+        local cleanup_confirm=""
+        read -r -p "是否顺便清理旧版 FluxChain 镜像以释放磁盘空间？(y/N): " cleanup_confirm || true
+        if [[ "$cleanup_confirm" == "y" || "$cleanup_confirm" == "Y" ]]; then
+          cleanup_old_images || echo "⚠️ 旧版镜像清理失败，面板已更新完成，请稍后排查 Docker 状态。" >&2
+        fi
+      else
+        echo "💡 如需清理旧版镜像，可执行：sudo bash panel_install.sh cleanup"
+      fi
+      ;;
+  esac
 }
 
 # 导出数据库备份
@@ -1094,6 +1113,115 @@ export_migration_sql() {
 }
 
 
+# 仅当候选标签为标准语义版本（可带 v 前缀）且严格低于当前版本时返回 0；
+# 更高版本（如 1.1.7）与非版本标签（如 latest/dev）一律返回 1（不删除）。
+is_older_version() {
+  local candidate="${1#v}" current="${2#v}"
+  local re='^([0-9]+)\.([0-9]+)\.([0-9]+)(-([0-9A-Za-z.-]+))?$'
+  local c_maj c_min c_pat c_pre cur_maj cur_min cur_pat cur_pre
+  [[ "$candidate" =~ $re ]] || return 1
+  c_maj=$((10#${BASH_REMATCH[1]}))
+  c_min=$((10#${BASH_REMATCH[2]}))
+  c_pat=$((10#${BASH_REMATCH[3]}))
+  c_pre="${BASH_REMATCH[5]}"
+  [[ "$current" =~ $re ]] || return 1
+  cur_maj=$((10#${BASH_REMATCH[1]}))
+  cur_min=$((10#${BASH_REMATCH[2]}))
+  cur_pat=$((10#${BASH_REMATCH[3]}))
+  cur_pre="${BASH_REMATCH[5]}"
+
+  if ((c_maj != cur_maj)); then
+    ((c_maj < cur_maj))
+    return
+  fi
+  if ((c_min != cur_min)); then
+    ((c_min < cur_min))
+    return
+  fi
+  if ((c_pat != cur_pat)); then
+    ((c_pat < cur_pat))
+    return
+  fi
+  # 同主次修订号时，仅将预发布版视为低于正式版
+  [[ -n "$c_pre" && -z "$cur_pre" ]]
+}
+
+# 清理未在使用的旧版 FluxChain 镜像（保留当前版本、更高版本、非版本标签、正在使用镜像及数据卷）
+cleanup_old_images() {
+  echo "🧹 检查可清理的旧版 FluxChain 镜像..."
+  local container_ids="" images_output="" dangling_output=""
+  local cid img_id repo tag active_image_ids="" targets=() seen_targets="" target removed=0
+
+  if ! container_ids=$(docker ps -a -q 2>/dev/null); then
+    echo "❌ 查询 Docker 容器列表失败，已中止镜像清理" >&2
+    return 1
+  fi
+  while IFS= read -r cid; do
+    [[ -n "$cid" ]] || continue
+    if ! img_id=$(docker inspect --format '{{.Image}}' "$cid" 2>/dev/null) || [[ -z "$img_id" ]]; then
+      echo "❌ 查询容器 $cid 关联镜像失败，已中止镜像清理" >&2
+      return 1
+    fi
+    active_image_ids+="$img_id"$'\n'
+  done <<< "$container_ids"
+
+  if ! images_output=$(docker images --no-trunc --format '{{.Repository}}	{{.Tag}}	{{.ID}}' 2>/dev/null); then
+    echo "❌ 查询 Docker 镜像列表失败，已中止镜像清理" >&2
+    return 1
+  fi
+  while IFS=$'\t' read -r repo tag img_id; do
+    [[ -n "$img_id" ]] || continue
+    if [[ $'\n'"$active_image_ids" == *$'\n'"$img_id"$'\n'* ]]; then
+      continue
+    fi
+    case "$repo" in
+      ghcr.io/toto0912/flux-chain-backend|ghcr.io/toto0912/flux-chain-frontend)
+        if [[ "$tag" == "<none>" ]]; then
+          target="$img_id"
+        elif is_older_version "$tag" "$RELEASE_VERSION"; then
+          target="$repo:$tag"
+        else
+          continue
+        fi
+        if [[ "$seen_targets" != *"$target"$'\n'* ]]; then
+          targets+=("$target")
+          seen_targets+="$target"$'\n'
+        fi
+        ;;
+    esac
+  done <<< "$images_output"
+
+  if ! dangling_output=$(docker images -f "dangling=true" -f "label=org.opencontainers.image.source=https://github.com/Toto0912/flux-chain" --no-trunc -q 2>/dev/null); then
+    echo "❌ 查询悬空 FluxChain 镜像失败，已中止镜像清理" >&2
+    return 1
+  fi
+  while IFS= read -r img_id; do
+    [[ -n "$img_id" ]] || continue
+    if [[ $'\n'"$active_image_ids" == *$'\n'"$img_id"$'\n'* ]]; then
+      continue
+    fi
+    if [[ "$seen_targets" != *"$img_id"$'\n'* ]]; then
+      targets+=("$img_id")
+      seen_targets+="$img_id"$'\n'
+    fi
+  done <<< "$dangling_output"
+
+  if ((${#targets[@]} == 0)); then
+    echo "✅ 未发现需要清理的旧版 FluxChain 镜像"
+    return 0
+  fi
+
+  for target in "${targets[@]}"; do
+    if docker rmi "$target" >/dev/null 2>&1; then
+      echo "🗑️ 已清理旧镜像：$target"
+      removed=$((removed + 1))
+    else
+      echo "⚠️ 跳过无法删除的镜像：$target"
+    fi
+  done
+  echo "✅ 镜像清理完成，共清理 $removed 个旧版 FluxChain 镜像"
+}
+
 # 卸载功能
 uninstall_panel() {
   echo "🗑️ 开始卸载面板..."
@@ -1122,7 +1250,7 @@ main() {
   # 显示交互式菜单
   while true; do
     show_menu
-    read -p "请输入选项 (1-5): " choice
+    read -p "请输入选项 (1-6): " choice
 
     case $choice in
       1)
@@ -1142,11 +1270,16 @@ main() {
         exit 0
         ;;
       5)
+        check_docker
+        cleanup_old_images
+        exit 0
+        ;;
+      6)
         echo "👋 退出脚本"
         exit 0
         ;;
       *)
-        echo "❌ 无效选项，请输入 1-5"
+        echo "❌ 无效选项，请输入 1-6"
         echo ""
         ;;
     esac
@@ -1159,8 +1292,9 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     install) install_panel ;;
     update) update_panel ;;
     backup) check_docker; export_migration_sql ;;
+    cleanup|clean-images) check_docker; cleanup_old_images ;;
     uninstall) uninstall_panel ;;
     "") main ;;
-    *) echo "用法: bash panel_install.sh [install|update|backup|uninstall]" >&2; exit 1 ;;
+    *) echo "用法: bash panel_install.sh [install|update|backup|cleanup|uninstall]" >&2; exit 1 ;;
   esac
 fi

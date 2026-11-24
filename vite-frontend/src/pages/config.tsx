@@ -47,8 +47,8 @@ const CONFIG_ITEMS: ConfigItem[] = [
   {
     key: 'ip',
     label: '面板后端地址',
-    placeholder: '请输入面板后端IP:PORT',
-    description: '格式“ip:port”,用于对接节点时使用,ip是你安装面板服务器的公网ip,端口是安装脚本内输入的后端端口。不要套CDN,不支持https,通讯数据有加密',
+    placeholder: '请输入面板后端地址，如 ip:port 或 https://域名',
+    description: '用于对接节点，支持 "ip:port"（ws/http）或 "https://域名[:端口]"（自动使用 wss/https，适合反向代理场景）。通讯数据已加密，新版节点默认通过请求头传递密钥。',
     type: 'input'
   },
   {

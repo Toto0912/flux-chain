@@ -1,6 +1,6 @@
 package main
 
-const nodeAgentVersion = "1.1.6"
+const nodeAgentVersion = "1.1.7-rc.1"
 
 var (
 	version = "3.1.0"

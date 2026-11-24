@@ -1,25 +1,33 @@
 import { Route, Routes, useNavigate } from "react-router-dom";
-import { useEffect, useState } from "react";
-
-import IndexPage from "@/pages/index";
-import ChangePasswordPage from "@/pages/change-password";
-import DashboardPage from "@/pages/dashboard";
-import ForwardPage from "@/pages/forward";
-import ForwardChainPage from "@/pages/forward-chain";
-import TunnelPage from "@/pages/tunnel";
-import NodePage from "@/pages/node";
-import UserPage from "@/pages/user";
-import ProfilePage from "@/pages/profile";
-import LimitPage from "@/pages/limit";
-import ConfigPage from "@/pages/config";
-import { SettingsPage } from "@/pages/settings";
-
-import AdminLayout from "@/layouts/admin";
-import H5Layout from "@/layouts/h5";
-import H5SimpleLayout from "@/layouts/h5-simple";
+import { Suspense, lazy, useEffect, useState } from "react";
 
 import { isLoggedIn } from "@/utils/auth";
-import { siteConfig } from "@/config/site";
+import { siteConfig, getCachedConfig } from "@/config/site";
+
+const IndexPage = lazy(() => import("@/pages/index"));
+const ChangePasswordPage = lazy(() => import("@/pages/change-password"));
+const DashboardPage = lazy(() => import("@/pages/dashboard"));
+const ForwardPage = lazy(() => import("@/pages/forward"));
+const ForwardChainPage = lazy(() => import("@/pages/forward-chain"));
+const TunnelPage = lazy(() => import("@/pages/tunnel"));
+const NodePage = lazy(() => import("@/pages/node"));
+const UserPage = lazy(() => import("@/pages/user"));
+const ProfilePage = lazy(() => import("@/pages/profile"));
+const LimitPage = lazy(() => import("@/pages/limit"));
+const ConfigPage = lazy(() => import("@/pages/config"));
+const SettingsPage = lazy(() =>
+  import("@/pages/settings").then((m) => ({ default: m.SettingsPage })),
+);
+
+const AdminLayout = lazy(() => import("@/layouts/admin"));
+const H5Layout = lazy(() => import("@/layouts/h5"));
+const H5SimpleLayout = lazy(() => import("@/layouts/h5-simple"));
+
+const RouteLoadingFallback = () => (
+  <div className="flex items-center justify-center min-h-[40vh] w-full">
+    <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+  </div>
+);
 
 // 检测是否为H5模式
 const useH5Mode = () => {
@@ -97,7 +105,11 @@ const ProtectedRoute = ({ children, useSimpleLayout = false, skipLayout = false,
     Layout = AdminLayout;
   }
   
-  return <Layout>{children}</Layout>;
+  return (
+    <Layout>
+      <Suspense fallback={<RouteLoadingFallback />}>{children}</Suspense>
+    </Layout>
+  );
 };
 
 
@@ -132,8 +144,6 @@ function App() {
     // 异步检查是否有配置更新
     const checkTitleUpdate = async () => {
       try {
-        // 引入必要的函数
-        const { getCachedConfig } = await import('@/config/site');
         const cachedAppName = await getCachedConfig('app_name');
         if (cachedAppName && cachedAppName !== document.title) {
           document.title = cachedAppName;
@@ -150,7 +160,8 @@ function App() {
   }, []);
 
   return (
-    <Routes>
+    <Suspense fallback={<RouteLoadingFallback />}>
+      <Routes>
       <Route path="/" element={<LoginRoute />} />
       <Route 
         path="/change-password" 
@@ -237,6 +248,7 @@ function App() {
         element={<SettingsPage />}
       />
     </Routes>
+    </Suspense>
   );
 }
 

@@ -6,18 +6,26 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-gost/core/observer/stats"
 	"github.com/go-gost/x/config"
 	"github.com/go-gost/x/internal/util/crypto"
+	"github.com/go-gost/x/internal/util/panelurl"
 	"github.com/go-gost/x/registry"
 )
 
 var httpReportURL string
 var configReportURL string
+var httpPanelEndpoint panelurl.Endpoint
+var httpNodeSecret string
+var useQuerySecret atomic.Bool
 var httpAESCrypto *crypto.AESCrypto // 新增：HTTP上报加密器
+
+func SetUseQuerySecret(enabled bool) {
+	useQuerySecret.Store(enabled)
+}
 
 // TrafficReportItem 流量报告项（压缩格式）
 type TrafficReportItem struct {
@@ -27,11 +35,20 @@ type TrafficReportItem struct {
 }
 
 func SetHTTPReportURL(addr string, secret string) {
-	httpReportURL = "http://" + addr + "/flow/upload?secret=" + secret
-	configReportURL = "http://" + addr + "/flow/config?secret=" + secret
+	httpNodeSecret = secret
+	ep, err := panelurl.Parse(addr)
+	if err != nil {
+		fmt.Printf("❌ 解析面板地址失败: %v\n", err)
+		httpPanelEndpoint = panelurl.Endpoint{HTTPScheme: "http", WSScheme: "ws", Host: addr}
+		httpReportURL = "http://" + addr + "/flow/upload"
+		configReportURL = "http://" + addr + "/flow/config"
+	} else {
+		httpPanelEndpoint = ep
+		httpReportURL = ep.HTTPURL("/flow/upload", "")
+		configReportURL = ep.HTTPURL("/flow/config", "")
+	}
 
 	// 创建 AES 加密器
-	var err error
 	httpAESCrypto, err = crypto.NewAESCrypto(secret)
 	if err != nil {
 		fmt.Printf("❌ 创建 HTTP AES 加密器失败: %v\n", err)
@@ -39,6 +56,10 @@ func SetHTTPReportURL(addr string, secret string) {
 	} else {
 		fmt.Printf("🔐 HTTP AES 加密器创建成功\n")
 	}
+}
+
+func buildReportRequest(ctx context.Context, endpointPath string, body []byte, userAgent string) (*http.Request, error) {
+	return httpPanelEndpoint.NewReportRequest(ctx, endpointPath, body, httpNodeSecret, userAgent, useQuerySecret.Load())
 }
 
 // sendTrafficReport 发送流量报告到HTTP接口
@@ -73,43 +94,23 @@ func sendTrafficReport(ctx context.Context, reportItems TrafficReportItem) (bool
 		requestBody = jsonData
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", httpReportURL, bytes.NewBuffer(requestBody))
+	req, err := buildReportRequest(ctx, "/flow/upload", requestBody, "GOST-Traffic-Reporter/1.0")
 	if err != nil {
-		return false, fmt.Errorf("创建HTTP请求失败: %v", err)
+		return false, fmt.Errorf("创建HTTP请求失败: %s", panelurl.SanitizeError(err, httpNodeSecret))
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "GOST-Traffic-Reporter/1.0")
-
-	client := &http.Client{
-		Timeout: 5 * time.Second,
-	}
+	client := panelurl.NewHTTPClient(5 * time.Second)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return false, fmt.Errorf("发送HTTP请求失败: %v", err)
+		return false, fmt.Errorf("发送HTTP请求失败: %s", panelurl.SanitizeError(err, httpNodeSecret))
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return false, fmt.Errorf("HTTP响应错误: %d %s", resp.StatusCode, resp.Status)
+	if err := panelurl.ValidateReportResponse(resp.StatusCode, resp.Body); err != nil {
+		return false, err
 	}
-
-	// 读取响应内容
-	var responseBytes bytes.Buffer
-	_, err = responseBytes.ReadFrom(resp.Body)
-	if err != nil {
-		return false, fmt.Errorf("读取响应内容失败: %v", err)
-	}
-
-	responseText := strings.TrimSpace(responseBytes.String())
-
-	// 检查响应是否为"ok"
-	if responseText == "ok" {
-		return true, nil
-	} else {
-		return false, fmt.Errorf("服务器响应: %s (期望: ok)", responseText)
-	}
+	return true, nil
 }
 
 // sendConfigReport 发送配置报告到HTTP接口
@@ -149,43 +150,23 @@ func sendConfigReport(ctx context.Context) (bool, error) {
 		requestBody = configData
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", configReportURL, bytes.NewBuffer(requestBody))
+	req, err := buildReportRequest(ctx, "/flow/config", requestBody, "Config-Reporter/1.0")
 	if err != nil {
-		return false, fmt.Errorf("创建HTTP请求失败: %v", err)
+		return false, fmt.Errorf("创建HTTP请求失败: %s", panelurl.SanitizeError(err, httpNodeSecret))
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "Config-Reporter/1.0")
-
-	client := &http.Client{
-		Timeout: 10 * time.Second, // 配置上报可以稍长一些
-	}
+	client := panelurl.NewHTTPClient(10 * time.Second)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return false, fmt.Errorf("发送HTTP请求失败: %v", err)
+		return false, fmt.Errorf("发送HTTP请求失败: %s", panelurl.SanitizeError(err, httpNodeSecret))
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return false, fmt.Errorf("HTTP响应错误: %d %s", resp.StatusCode, resp.Status)
+	if err := panelurl.ValidateReportResponse(resp.StatusCode, resp.Body); err != nil {
+		return false, err
 	}
-
-	// 读取响应内容
-	var responseBytes bytes.Buffer
-	_, err = responseBytes.ReadFrom(resp.Body)
-	if err != nil {
-		return false, fmt.Errorf("读取响应内容失败: %v", err)
-	}
-
-	responseText := strings.TrimSpace(responseBytes.String())
-
-	// 检查响应是否为"ok"
-	if responseText == "ok" {
-		return true, nil
-	} else {
-		return false, fmt.Errorf("服务器响应: %s (期望: ok)", responseText)
-	}
+	return true, nil
 }
 
 // StartConfigReporter 启动配置定时上报器（每10分钟上报一次）

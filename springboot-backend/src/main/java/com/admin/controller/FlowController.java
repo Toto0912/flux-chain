@@ -105,7 +105,11 @@ public class FlowController extends BaseController {
 
     @PostMapping("/config")
     @LogAnnotation
-    public String config(@RequestBody String rawData, String secret) {
+    public String config(@RequestBody String rawData,
+                         @RequestParam(value = "secret", required = false) String querySecret,
+                         @RequestHeader(value = "X-Node-Secret", required = false) String headerSecret) {
+        String secret = (headerSecret != null && !headerSecret.isBlank()) ? headerSecret : querySecret;
+        if (secret == null || secret.isBlank()) return SUCCESS_RESPONSE;
         Node node = nodeService.getOne(new QueryWrapper<Node>().eq("secret", secret));
         if (node == null) return SUCCESS_RESPONSE;
 
@@ -141,9 +145,12 @@ public class FlowController extends BaseController {
      */
     @RequestMapping("/upload")
     @LogAnnotation
-    public String uploadFlowData(@RequestBody String rawData, String secret) {
+    public String uploadFlowData(@RequestBody String rawData,
+                                 @RequestParam(value = "secret", required = false) String querySecret,
+                                 @RequestHeader(value = "X-Node-Secret", required = false) String headerSecret) {
+        String secret = (headerSecret != null && !headerSecret.isBlank()) ? headerSecret : querySecret;
         // 1. 验证节点权限
-        if (!isValidNode(secret)) {
+        if (secret == null || secret.isBlank() || !isValidNode(secret)) {
             return SUCCESS_RESPONSE;
         }
 

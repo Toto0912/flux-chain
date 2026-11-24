@@ -19,9 +19,21 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: false,
-    minify: false,  
+    minify: 'esbuild',
     rollupOptions: {
-      treeshake: false,
-    }
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return;
+          if (
+            id.includes('/react/') ||
+            id.includes('/react-dom/') ||
+            id.includes('/react-router') ||
+            id.includes('/scheduler/')
+          ) {
+            return 'react-vendor';
+          }
+        },
+      },
+    },
   }
 });

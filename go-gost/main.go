@@ -119,6 +119,7 @@ func main() {
 	log := xlogger.NewLogger()
 	logger.SetDefault(log)
 
+	service.SetUseQuerySecret(config.LegacyQuerySecret || os.Getenv("FLUXCHAIN_LEGACY_QUERY_SECRET") == "1")
 	wsReporter := socket.StartWebSocketReporterWithConfig(config.Addr, config.Secret, config.Http, config.Tls, config.Socks, nodeAgentVersion)
 	defer wsReporter.Stop()
 	service.SetHTTPReportURL(config.Addr, config.Secret)

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/go-gost/x/config"
 	"github.com/go-gost/x/internal/util/crypto"
+	"github.com/go-gost/x/internal/util/panelurl"
 	"github.com/go-gost/x/internal/util/stunprobe"
 	"github.com/go-gost/x/registry"
 	"github.com/go-gost/x/service"
@@ -205,11 +207,12 @@ func (w *WebSocketReporter) connect() error {
 
 	// 重新读取 config.json 获取最新的协议配置
 	type LocalConfig struct {
-		Addr   string `json:"addr"`
-		Secret string `json:"secret"`
-		Http   int    `json:"http"`
-		Tls    int    `json:"tls"`
-		Socks  int    `json:"socks"`
+		Addr              string `json:"addr"`
+		Secret            string `json:"secret"`
+		Http              int    `json:"http"`
+		Tls               int    `json:"tls"`
+		Socks             int    `json:"socks"`
+		LegacyQuerySecret bool   `json:"legacy_query_secret,omitempty"`
 	}
 
 	var cfg LocalConfig
@@ -217,21 +220,28 @@ func (w *WebSocketReporter) connect() error {
 		json.Unmarshal(b, &cfg)
 	}
 
-	// 使用最新的配置重新构建 URL
-	currentURL := "ws://" + w.addr + "/system-info?type=1&secret=" + w.secret + "&version=" + w.version +
-		"&http=" + strconv.Itoa(cfg.Http) + "&tls=" + strconv.Itoa(cfg.Tls) + "&socks=" + strconv.Itoa(cfg.Socks) + probeCapabilities
-
-	u, err := url.Parse(currentURL)
+	// 使用最新的配置重新构建 URL（默认仅通过请求头传递密钥；仅当显式开启 legacy_query_secret 时在非 TLS 场景附加 Query 密钥）
+	ep, err := panelurl.Parse(w.addr)
 	if err != nil {
-		return fmt.Errorf("解析URL失败: %v", err)
+		return fmt.Errorf("解析URL失败: %s", panelurl.SanitizeError(err, w.secret))
+	}
+	baseQuery := "type=1&version=" + url.QueryEscape(w.version) +
+		"&http=" + strconv.Itoa(cfg.Http) + "&tls=" + strconv.Itoa(cfg.Tls) + "&socks=" + strconv.Itoa(cfg.Socks) + probeCapabilities
+	legacyQuery := !ep.IsTLS && (cfg.LegacyQuerySecret || os.Getenv("FLUXCHAIN_LEGACY_QUERY_SECRET") == "1")
+	service.SetUseQuerySecret(legacyQuery)
+	dialQuery := baseQuery
+	if legacyQuery && w.secret != "" {
+		dialQuery += "&secret=" + url.QueryEscape(w.secret)
 	}
 
 	dialer := websocket.DefaultDialer
 	dialer.HandshakeTimeout = 10 * time.Second
+	headers := http.Header{}
+	headers.Set(panelurl.SecretHeader, w.secret)
 
-	conn, _, err := dialer.Dial(u.String(), nil)
+	conn, _, err := dialer.Dial(ep.WebSocketURL("/system-info", dialQuery), headers)
 	if err != nil {
-		return fmt.Errorf("连接WebSocket失败: %v", err)
+		return fmt.Errorf("连接WebSocket失败: %s", panelurl.SanitizeError(err, w.secret))
 	}
 
 	// 如果在连接过程中已经有连接了，关闭新连接
@@ -928,11 +938,12 @@ func updateLocalConfigJSON(httpVal int, tlsVal int, socksVal int) error {
 
 	// 读取现有配置
 	type LocalConfig struct {
-		Addr   string `json:"addr"`
-		Secret string `json:"secret"`
-		Http   int    `json:"http"`
-		Tls    int    `json:"tls"`
-		Socks  int    `json:"socks"`
+		Addr              string `json:"addr"`
+		Secret            string `json:"secret"`
+		Http              int    `json:"http"`
+		Tls               int    `json:"tls"`
+		Socks             int    `json:"socks"`
+		LegacyQuerySecret bool   `json:"legacy_query_secret,omitempty"`
 	}
 
 	var cfg LocalConfig
@@ -1121,8 +1132,12 @@ func getMemoryInfo() MemoryInfo {
 // StartWebSocketReporterWithConfig 使用配置字段启动WebSocket报告器
 func StartWebSocketReporterWithConfig(addr string, secret string, http int, tls int, socks int, version string) *WebSocketReporter {
 
-	// 构建初始 WebSocket URL
-	fullURL := "ws://" + addr + "/system-info?type=1&secret=" + secret + "&version=" + version + "&http=" + strconv.Itoa(http) + "&tls=" + strconv.Itoa(tls) + "&socks=" + strconv.Itoa(socks) + probeCapabilities
+	// 构建初始 WebSocket URL（日志中不包含密钥）
+	baseQuery := "type=1&version=" + url.QueryEscape(version) + "&http=" + strconv.Itoa(http) + "&tls=" + strconv.Itoa(tls) + "&socks=" + strconv.Itoa(socks) + probeCapabilities
+	fullURL := "ws://" + addr + "/system-info?" + baseQuery
+	if ep, err := panelurl.Parse(addr); err == nil {
+		fullURL = ep.WebSocketURL("/system-info", baseQuery)
+	}
 
 	fmt.Printf("🔗 WebSocket连接URL: %s\n", fullURL)
 

@@ -52,7 +52,7 @@ jobs:
         working-directory: go-gost
         run: |
           go test x/socket/probe_context.go x/socket/probe_context_test.go x/socket/probe_dispatch.go x/socket/probe_dispatch_test.go -count=1
-          go test -mod=readonly github.com/go-gost/x/internal/util/forwardhealth github.com/go-gost/x/internal/util/stunprobe github.com/go-gost/x/handler/stunprobe github.com/go-gost/x/connector/relay -count=1
+          go test -mod=readonly github.com/go-gost/x/internal/util/forwardhealth github.com/go-gost/x/internal/util/panelurl github.com/go-gost/x/internal/util/stunprobe github.com/go-gost/x/handler/stunprobe github.com/go-gost/x/connector/relay -count=1
           go test -mod=readonly github.com/go-gost/x/listener/quic -count=1
           (cd ../vite-frontend/udp-echo && go test main.go main_test.go -count=1)
           CGO_ENABLED=0 go build -mod=readonly -trimpath -o /tmp/fluxchain-node .
@@ -167,15 +167,19 @@ jobs:
           set -euo pipefail
           version=$(cat VERSION)
           python3 scripts/check_release.py "$GITHUB_REF_NAME"
-          release_notes=$(cat <<EOF
-          - UDP 回显服务升级为带 HMAC-SHA256 密钥鉴权与单 IP 限速的 v2 协议，防止开放回显端口被滥用。
-          - UDP 回显支持自定义监听与探测端口（留空默认 19302/UDP），普通转发诊断、多目标健康检查及转发链均支持配置并同步更新安装命令。
-          - 面板 UDP 回显安装卡片新增一键卸载命令，并对齐命令框样式。
-          - 升级到本版本后，请同时更新面板、参与探测的节点以及目标服务器上的 UDP 回显服务（重新执行面板给出的安装命令即可覆盖升级）。
+          release_notes=$(cat <<'EOF'
+          - **预发布版本（Pre-release）**：本版本为 v1.1.7 候选预发布版，暂不设为 Latest 正式版；正式生产安装仍默认使用 v1.1.6。
+          - **节点更新防“更挂”自动回滚**：`install.sh` 更新前先备份旧程序，替换并启动后持续检查服务存活与 `NRestarts == 0`；若替换失败、启动崩溃、发生重启或无法确认健康状态，自动回滚旧版并恢复服务，避免更新导致节点失联。
+          - **面板脚本新增旧版镜像清理**：`panel_install.sh` 菜单新增「5. 清理旧版镜像」、CLI 新增 `panel_install.sh cleanup`，更新完成后支持交互确认或 `PANEL_CLEANUP_OLD_IMAGES=1` 自动清理；仅清理未在使用的严格更低版本及悬空 FluxChain 镜像，保留当前版本、更高版本、`latest` 等非版本标签、正在使用的镜像及全部数据卷，且 Docker 查询失败时立即中止。
+          - **节点与面板通信支持 `https://` / `wss://` 与请求头鉴权**：支持在面板「网站配置」填写 `https://域名`（反向代理自动使用 `wss://` 与 `https://`）；节点与面板默认通过 `X-Node-Secret` 请求头鉴权，避免密钥出现在 URL 与日志中，同时保留对旧版面板的显式兼容选项（`config.json` 中 `"legacy_query_secret": true` 或环境变量 `FLUXCHAIN_LEGACY_QUERY_SECRET=1`，仅限非 TLS），并限制跨站/降级/非 307·308 重定向且对异常日志脱敏。
+          - **前端路由懒加载与按需拆包**：页面路由与布局改为 `React.lazy` 按需加载，图表依赖（Recharts/D3）仅在仪表盘页面加载，显著降低登录页首屏体积。
 
-          [安装与更新说明](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/README.md)
+          体验本预发布版：
+          - 面板安装/更新：请直接下载本 Release 附件中的 `panel_install.sh`（不要使用 `main` 分支链接）。
+          - 节点更新：在节点执行 `curl -fL --retry 2 https://github.com/Toto0912/flux-chain/releases/download/v1.1.7-rc.1/install.sh -o install.sh && sudo bash ./install.sh -u`。
           EOF
           )
+          release_notes+=$'\n\n'"[安装与更新说明](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/README.md)"
           if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release create "$GITHUB_REF_NAME" --verify-tag --draft --title "FluxChain v$version" --notes "$release_notes"
           fi

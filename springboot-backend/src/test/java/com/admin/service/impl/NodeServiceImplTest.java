@@ -39,11 +39,36 @@ class NodeServiceImplTest {
         R response = service.getInstallCommand(1L);
         assertEquals(0, response.getCode());
         String command = response.getData().toString();
-        assertTrue(command.startsWith("curl -fL --retry 2 https://github.com/Toto0912/flux-chain/releases/download/v1.1.6/install.sh"));
+        assertTrue(command.startsWith("curl -fL --retry 2 https://github.com/Toto0912/flux-chain/releases/download/v1.1.7-rc.1/install.sh"));
         assertTrue(command.contains("-o install.sh && bash ./install.sh -a '"));
         assertTrue(command.contains("-s 'node'\"'\"'s-key'"));
         assertFalse(command.contains("bqlpfy"));
         assertFalse(command.contains("/latest/"));
+    }
+
+    @Test
+    void installCommandPreservesHttpsAndWssSchemesWithoutBreakingIPv6() {
+        Node node = new Node();
+        node.setSecret("sec-1");
+        when(nodes.selectById(any())).thenReturn(node);
+
+        for (String[] pair : new String[][]{
+                {"https://panel.example.com/", " -a 'https://panel.example.com' "},
+                {"https://panel.example.com:8443/", " -a 'https://panel.example.com:8443' "},
+                {"https://[2001:db8::1]:8443/sub/", " -a 'https://[2001:db8::1]:8443/sub' "},
+                {"2001:db8::1:6365", " -a '[2001:db8::1]:6365' "},
+                {"http://1.2.3.4:6365", " -a 'http://1.2.3.4:6365' "}
+        }) {
+            ViteConfigService configs = mock(ViteConfigService.class);
+            ViteConfig config = new ViteConfig();
+            config.setValue(pair[0]);
+            when(configs.getOne(any())).thenReturn(config);
+            ReflectionTestUtils.setField(service, "viteConfigService", configs);
+            R response = service.getInstallCommand(1L);
+            assertEquals(0, response.getCode());
+            assertTrue(response.getData().toString().contains(pair[1]),
+                    "Expected " + pair[1] + " in " + response.getData());
+        }
     }
 
     @BeforeEach

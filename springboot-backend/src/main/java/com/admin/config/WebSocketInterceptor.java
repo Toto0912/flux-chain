@@ -35,13 +35,19 @@ public class WebSocketInterceptor extends HttpSessionHandshakeInterceptor {
     @Override
     public boolean beforeHandshake(ServerHttpRequest request, ServerHttpResponse response, WebSocketHandler wsHandler, Map<String, Object> attributes) throws Exception {
         ServletServerHttpRequest serverHttpRequest = (ServletServerHttpRequest) request;
-        String secret = serverHttpRequest.getServletRequest().getParameter("secret");
+        String headerSecret = serverHttpRequest.getServletRequest().getHeader("X-Node-Secret");
+        String querySecret = serverHttpRequest.getServletRequest().getParameter("secret");
+        String secret = (headerSecret != null && !headerSecret.isBlank()) ? headerSecret : querySecret;
         String type = serverHttpRequest.getServletRequest().getParameter("type");
         String version = serverHttpRequest.getServletRequest().getParameter("version");
         String http = serverHttpRequest.getServletRequest().getParameter("http");
         String tls = serverHttpRequest.getServletRequest().getParameter("tls");
         String socks = serverHttpRequest.getServletRequest().getParameter("socks");
         if (Objects.equals(type, "1")) {
+            if (secret == null || secret.isBlank()) {
+                log.info("节点验证失败：缺少节点密钥");
+                return false;
+            }
             log.debug("节点握手，类型: {}, 版本: {}, IP: {}", type, version, getClientIp(request));
             Node node = nodeService.getOne(new QueryWrapper<Node>().eq("secret", secret));
             if (node == null) {
